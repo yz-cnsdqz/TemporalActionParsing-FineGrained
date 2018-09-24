@@ -99,10 +99,15 @@ def temporal_convs_linear(n_nodes, conv_len, n_classes, n_feat, max_len,
 
 '''
 https://github.com/tensorflow/tensorflow/issues/6503
+https://gist.github.com/psycharo/60f58d5435281bdea8b9d4ee4f6e895b
 '''
 
-def matrix_symmetric(x):
+def mmsym(x):
     return (x + tf.transpose(x, [0,1,3,2])) / 2
+
+def mmdiag(x):
+    return tf.matrix_diag(tf.matrix_diag_part(x))
+
 
 def get_eigen_K(x, square=False):
     """
@@ -146,33 +151,32 @@ def gradient_svd(op, grad_s, grad_u, grad_v):
     -------
     """
 
-    s, u, v = op.outputs
+    s, U, V = op.outputs
     
-    v_t = tf.transpose(v, [0,1,3,2])
+    V_t = tf.transpose(V, [0,1,3,2])
+    U_t = tf.transpose(U, [0,1,3,2])
+    K = get_eigen_K(s, True)
+    K_t = tf.transpose(K, [0,1,3,2]) 
+
+    S = tf.matrix_diag(s)
+    grad_S = tf.matrix_diag(grad_s)
+    D = tf.matmul(grad_u, 1.0/S)
+    D_t = tf.transpose(D, [0,1,3,2])
+
+
+    # compose the full gradient 
+    term1 = tf.matmul(D, V_t)
     
-    with tf.name_scope('K'):
-        K = get_eigen_K(s, True)
-    
-    inner = matrix_symmetric(K * tf.matmul(v_t, grad_v))
-    # print('inner.shape='+str(inner.shape))
-    # Create the shape accordingly.
-    u_shape = u.get_shape()[-1].value
-    v_shape = v.get_shape()[-1].value
+    term2_1 = mmdiag(grad_S - tf.matmul(U_t, D))
+    term2 = tf.matmul(U, tf.matmul(term2_1, V_t))
 
-    # Recover the complete S matrices and its gradient. Note that we dont have complex numbers, since X is symmetric
-    eye_mat = tf.eye(v_shape, u_shape)
+    term3_1 = tf.matmul(V, tf.matmul(D_t, tf.matmul(U, S)))
+    term3_2 = mmsym(K_t * tf.matmul(V_t, grad_v-term3_1))
+    term3 = 2*tf.matmul(U, tf.matmul(S, tf.matmul(term3_2, V_t)))
 
-    # realS = tf.matmul(tf.reshape(tf.matrix_diag(s), [-1, v_shape]), eye_mat)
-    # realS = tf.transpose(tf.reshape(realS, [-1, v_shape, u_shape]), [0,1,3,2])
-    realS = tf.matrix_diag(s)
-
-    # real_grad_S = tf.matmul(tf.reshape(tf.matrix_diag(grad_s), [-1, v_shape]), eye_mat)
-    # real_grad_S = tf.transpose(tf.reshape(real_grad_S, [-1, v_shape, u_shape]), [0,1,3,2])
-    real_grad_S=  tf.matrix_diag(grad_s)
-
-
-    dxdz = tf.matmul(u, tf.matmul(2 * tf.matmul(realS, inner) + real_grad_S, v_t))
-    return dxdz
+    dL_dX = term1+term2+term3
+  
+    return dL_dX
 
 
 
@@ -337,10 +341,10 @@ def tensor_product_with_mean2(inputs, st_conv_filter_one, st_conv_filter_two, co
     sigma =K.stack(sigma_list,axis=1)
     
     if rank is not None:
-        # with tf.device('/cpu:0'):
+        #with K.tf.device('/cpu:0'):
         sigma = EigenPooling(rank)(sigma)
     
-    print('sigma.shape='+str(sigma.shape))
+    # print('sigma.shape='+str(sigma.shape))
  
     sigma = K.reshape(sigma, [-1, sigma.shape[1], sigma.shape[-2]*sigma.shape[-1]])
  
@@ -428,7 +432,7 @@ class SqrtAcfun(Layer):
 
     def build(self, input_shape):
         self.shape = input_shape
-        self.gamma = self.add_weight(name='gamma',shape=[1],initializer=keras.initializers.Constant(value=0.001),trainable=True)
+        self.gamma = self.add_weight(name='gamma',shape=[1],initializer=keras.initializers.Constant(value=0.01),trainable=True)
         super(SqrtAcfun,self).build(input_shape)
 
     def call(self,x):
@@ -508,7 +512,7 @@ class BilinearPooling(Layer):
             x = Lambda(lambda x: lp_normalization(x, p=2))(x)
         else:
             x = tensor_product(x, self.st_conv_filter_one, self.time_conv_size, self.stride)
-            x = Lambda(lambda x: lp_normalization(x, p=2))(x)
+            #x = Lambda(lambda x: lp_normalization(x, p=2))(x)
         
         return x
 
@@ -653,7 +657,7 @@ class CenteredBilinearPooling2(Layer):
 
             x = tensor_product_with_mean2(x, self.st_conv_filter_one, self.st_conv_filter_two, self.time_conv_size, 
                                         self.feature, self.stride)
-            x = Lambda(lambda x: lp_normalization(x, p=2))(x)
+            # x = Lambda(lambda x: lp_normalization(x, p=1))(x)
         
         return x
 
@@ -792,11 +796,11 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
             model = Activation(activation)(model)    
 
         
-
+        #model = Lambda(lambda x: lp_normalization(x,p=2))(model)
         # model = MaxPooling1D(2)(model)	
         # model = BilinearPooling(5,stride=2, trainable=True)(model)
-        # model = CenteredBilinearPooling2(25,stride=2, trainable=False, feature='mean_cov')(model)
-        model = CenteredBilinearPoolingLowRank(11,stride=2, trainable=True, feature='mean_cov', rank=1)(model)
+        model = CenteredBilinearPooling2(11,stride=2, trainable=True, feature='mean_cov')(model)
+        # model = CenteredBilinearPoolingLowRank(11,stride=2, trainable=True, feature='mean_cov', rank=1)(model)
         
         
     # ---- Decoder ----
@@ -842,7 +846,7 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
 
 
     # optimizer = keras.optimizers.RMSprop(lr=0.01)
-    optimizer = keras.optimizers.Adam(lr=1e-2, decay=0.0)
+    optimizer = keras.optimizers.Adam(lr=0.01, decay=0.0)
     
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, sample_weight_mode="temporal", metrics=['accuracy'])
 
