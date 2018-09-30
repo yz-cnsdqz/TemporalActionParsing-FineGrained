@@ -248,6 +248,7 @@ if 1:
             model, param_str = tf_models.ED_Bilinear(n_nodes, conv, n_classes, n_feat, max_len, 
                                         causal=False, 
                                         activation='norm_relu', return_param_str=True, batch_size=4) 
+                                        activation='norm_relu', return_param_str=True) 
 
 
             model.fit(X_train_m, Y_train_, nb_epoch=nb_epoch, batch_size=4,

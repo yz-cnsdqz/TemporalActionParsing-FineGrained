@@ -204,6 +204,7 @@ def sort_tensor_column(X, col_idx):
 
 
 
+
 class EigenPooling(Layer):
     def __init__(self, rank,method='svd', **kwargs):
         self.rank = rank
@@ -243,6 +244,37 @@ class EigenPooling(Layer):
 
         return l
 
+
+    def call(self,x):
+        G = tf.get_default_graph()
+        
+        d = x.shape[-1]
+        ## eigendecomposition
+        #e,v = tf.self_adjoint_eig(x)
+        #e = tf.abs(e)
+        #e1,idx = tf.nn.top_k(e, k=self.rank)
+        #e1 = tf.matrix_diag(e1)
+
+        #v_list = tf.unstack(v, axis=1)
+        #vr_list = [tf.gather(xx, idx[]
+
+
+
+        #print(idx)
+        #print(v1.shape)
+        #l = tf.matmul(v1, e1)
+        #print(l.shape) 
+	## signlar value decomposition
+        
+            # G = tf.get_default_graph()
+
+        with G.gradient_override_map({'Svd':'SvdGrad'}):    
+            
+            s,u,v = tf.svd(x, full_matrices=True)
+            l = tf.matmul(u[:,:,:,:self.rank], tf.matrix_diag(s[:,:,:self.rank]))
+        return l
+    
+>>>>>>> 1f5e3da9e78a1240cc989a1c898615cc2d103e57
     def compute_output_shape(self, input_shape):
         return (input_shape[0], input_shape[1], input_shape[2],self.rank)
 
