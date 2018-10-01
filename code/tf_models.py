@@ -1,5 +1,6 @@
 import numpy as np
 import keras
+import sys
 from keras.models import Sequential, Model
 from keras.engine.topology import Layer
 from keras.layers import Input, Dense, TimeDistributed, merge, Lambda
@@ -98,13 +99,19 @@ def temporal_convs_linear(n_nodes, conv_len, n_classes, n_feat, max_len,
 
 
 '''
+low-rank approximation: backpropagation of SVD
 https://github.com/tensorflow/tensorflow/issues/6503
 Note: (1) GPU runing is considerably slow, 
       (2) running on cpu does not converge and randomly terminates without reporting error.
+https://gist.github.com/psycharo/60f58d5435281bdea8b9d4ee4f6e895b
 '''
 
-def matrix_symmetric(x):
+def mmsym(x):
     return (x + tf.transpose(x, [0,1,3,2])) / 2
+
+def mmdiag(x):
+    return tf.matrix_diag(tf.matrix_diag_part(x))
+
 
 def get_eigen_K(x, square=False):
     """
@@ -148,48 +155,96 @@ def gradient_svd(op, grad_s, grad_u, grad_v):
     -------
     """
 
-    s, u, v = op.outputs
+    s, U, V = op.outputs
     
-    v_t = tf.transpose(v, [0,1,3,2])
+    V_t = tf.transpose(V, [0,1,3,2])
+    U_t = tf.transpose(U, [0,1,3,2])
+    K = get_eigen_K(s, True)
+    K_t = tf.transpose(K, [0,1,3,2]) 
+
+    S = tf.matrix_diag(s)
+    grad_S = tf.matrix_diag(grad_s)
+    D = tf.matmul(grad_u, 1.0/S)
+    D_t = tf.transpose(D, [0,1,3,2])
+
+
+    # compose the full gradient 
+    term1 = tf.matmul(D, V_t)
     
-    with tf.name_scope('K'):
-        K = get_eigen_K(s, True)
-    
-    inner = matrix_symmetric(K * tf.matmul(v_t, grad_v))
-    # print('inner.shape='+str(inner.shape))
-    # Create the shape accordingly.
-    u_shape = u.get_shape()[-1].value
-    v_shape = v.get_shape()[-1].value
+    term2_1 = mmdiag(grad_S - tf.matmul(U_t, D))
+    term2 = tf.matmul(U, tf.matmul(term2_1, V_t))
 
-    # Recover the complete S matrices and its gradient. Note that we dont have complex numbers, since X is symmetric
-    eye_mat = tf.eye(v_shape, u_shape)
+    term3_1 = tf.matmul(V, tf.matmul(D_t, tf.matmul(U, S)))
+    term3_2 = mmsym(K_t * tf.matmul(V_t, grad_v-term3_1))
+    term3 = 2*tf.matmul(U, tf.matmul(S, tf.matmul(term3_2, V_t)))
 
-    # realS = tf.matmul(tf.reshape(tf.matrix_diag(s), [-1, v_shape]), eye_mat)
-    # realS = tf.transpose(tf.reshape(realS, [-1, v_shape, u_shape]), [0,1,3,2])
-    realS = tf.matrix_diag(s)
-
-    # real_grad_S = tf.matmul(tf.reshape(tf.matrix_diag(grad_s), [-1, v_shape]), eye_mat)
-    # real_grad_S = tf.transpose(tf.reshape(real_grad_S, [-1, v_shape, u_shape]), [0,1,3,2])
-    real_grad_S=  tf.matrix_diag(grad_s)
+    dL_dX = term1+term2+term3
+  
+    return dL_dX
 
 
-    dxdz = tf.matmul(u, tf.matmul(2 * tf.matmul(realS, inner) + real_grad_S, v_t))
-    return dxdz
-
-
+def sort_tensor_column(X, col_idx):
+    # X - the tensor with shape [batch, time, feature_dim, feature_dim]
+    # col_idx - the column index with shape[batch, time, r]
+    # this function returns a tensor with selected columns by r, i.e. return a tensor with [batch, time, feature_dim, r]
+    # notice that the first dimension batch is usually None
+    #n_batch = X.get_shape().as_list()[0]
+    n_batch = 4
+    n_time = X.get_shape().as_list()[1]
+    n_dim = X.get_shape().as_list()[2]
+    n_rank = col_idx.get_shape().as_list()[-1]
+    Xt = tf.transpose(X, [0,1,3,2])
+    Xt = tf.reshape(Xt, [n_batch*n_time, n_dim, n_dim])
+    col_idx = tf.reshape(col_idx, [n_batch*n_time, n_rank])
+    Xt_list = tf.unstack(Xt, axis=0)
+    X_sort_list = [tf.gather_nd(Xt_list[t], col_idx[t,:]) for t in range(len(Xt_list))]
+    print('X_sort_list[0].shape='+str(X_sort_list[0].shape))
+    X_sort = tf.stack(X_sort_list, axis=0)
+    X_sort = tf.reshape(X_sort,[n_batch, n_time, n_rank, n_dim])
+    X_sort = tf.transpose(X_sort, [0,1,3,2])
+    return X_sort
 
 
 
 
 class EigenPooling(Layer):
-    def __init__(self, rank, **kwargs):
+    def __init__(self, rank,method='svd', **kwargs):
         self.rank = rank
+        self.method = method
         super(EigenPooling, self).__init__(**kwargs)
 
     def build(self, input_shape):
         self.shape = input_shape
         super(EigenPooling,self).build(input_shape)
 
+
+    def call(self,x):
+        if self.method is 'eigen': 
+        ## eigendecomposition
+            e,v = tf.self_adjoint_eig(x)
+            v_size = v.get_shape().as_list()
+            e = tf.abs(e)
+            e1,idx = tf.nn.top_k(e, k=self.rank)
+            E1 = tf.sqrt(tf.matrix_diag(e1))
+            u = sort_tensor_column(v, idx)
+
+            print('v.shape='+str(v.shape))
+            print('idx.shape='+str(idx.shape))
+            print('u.shape='+str(u.shape))
+            l = tf.matmul(u[:,:,:,:self.rank],E1[:,:,:self.rank,:self.rank]) 
+
+
+	## signlar value decomposition
+        elif self.method is 'svd':
+            G = tf.get_default_graph()
+
+            with G.gradient_override_map({'Svd':'SvdGrad'}):                
+                s,u,v = tf.svd(x, full_matrices=True)
+                l = tf.matmul(u[:,:,:,:self.rank], tf.matrix_diag(tf.sqrt(1e-5+s[:,:,:self.rank])))
+        else: 
+            sys.exit('[ERROR] the specified method for matrix decomposition is not valid')
+
+        return l
 
 
     def call(self,x):
@@ -221,6 +276,7 @@ class EigenPooling(Layer):
             l = tf.matmul(u[:,:,:,:self.rank], tf.matrix_diag(s[:,:,:self.rank]))
         return l
     
+>>>>>>> 1f5e3da9e78a1240cc989a1c898615cc2d103e57
     def compute_output_shape(self, input_shape):
         return (input_shape[0], input_shape[1], input_shape[2],self.rank)
 
@@ -309,7 +365,7 @@ def tensor_product_with_mean(inputs, st_conv_filter_one, conv_len, feature, stri
 
 
 
-def tensor_product_with_mean2(inputs, st_conv_filter_one, st_conv_filter_two, conv_len, feature, stride=1, rank=None):
+def tensor_product_with_mean2(inputs, st_conv_filter_one, st_conv_filter_two, conv_len, feature, stride=1, rank=None, approx='eigen'):
     # input - [batch, time, channels]
 
     if feature not in ['mean','cov','mean_cov']:
@@ -337,12 +393,22 @@ def tensor_product_with_mean2(inputs, st_conv_filter_one, st_conv_filter_two, co
     
     sigma_list = [ tensor_product_local(x_centered[:,i:i+local_size,:],W) for i in range(0,n_frames,stride) ]
     sigma =K.stack(sigma_list,axis=1)
-    
+   
+
+    # low rank approximation
     if rank is not None:
-        # with tf.device('/cpu:0'):
-        sigma = EigenPooling(rank)(sigma)
-    
-    print('sigma.shape='+str(sigma.shape))
+        if rank >= local_size:
+            sys.exit('[ERROR]:the value of rank should not exceed or equal to the neighboring size')
+
+        if approx is 'svd' or 'eigen':
+        #with K.tf.device('/cpu:0'):
+            sigma = EigenPooling(rank, method=approx)(sigma)
+        elif approx is 'sorting':
+            #todo
+            print('-- this method is under construction')
+        else:
+            sys.exit('[ERROR]: the low rank approximation type is not valid')
+    # print('sigma.shape='+str(sigma.shape))
  
     sigma = K.reshape(sigma, [-1, sigma.shape[1], sigma.shape[-2]*sigma.shape[-1]])
  
@@ -430,7 +496,7 @@ class SqrtAcfun(Layer):
 
     def build(self, input_shape):
         self.shape = input_shape
-        self.gamma = self.add_weight(name='gamma',shape=[1],initializer=keras.initializers.Constant(value=0.001),trainable=True)
+        self.gamma = self.add_weight(name='gamma',shape=[1],initializer=keras.initializers.Constant(value=0.01),trainable=True)
         super(SqrtAcfun,self).build(input_shape)
 
     def call(self,x):
@@ -510,7 +576,7 @@ class BilinearPooling(Layer):
             x = Lambda(lambda x: lp_normalization(x, p=2))(x)
         else:
             x = tensor_product(x, self.st_conv_filter_one, self.time_conv_size, self.stride)
-            x = Lambda(lambda x: lp_normalization(x, p=2))(x)
+            #x = Lambda(lambda x: lp_normalization(x, p=2))(x)
         
         return x
 
@@ -655,7 +721,7 @@ class CenteredBilinearPooling2(Layer):
 
             x = tensor_product_with_mean2(x, self.st_conv_filter_one, self.st_conv_filter_two, self.time_conv_size, 
                                         self.feature, self.stride)
-            x = Lambda(lambda x: lp_normalization(x, p=2))(x)
+            # x = Lambda(lambda x: lp_normalization(x, p=1))(x)
         
         return x
 
@@ -747,7 +813,7 @@ class CenteredBilinearPoolingLowRank(Layer):
 def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len, 
             causal=False,
             activation='norm_relu',
-            return_param_str=False, dropout_ratio=0.3):
+            return_param_str=False, batch_size = 4, dropout_ratio=0.3):
     n_layers = len(n_nodes)
 
     inputs = Input(shape=(max_len,n_feat))
@@ -795,10 +861,11 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
 
         
 
-        model = MaxPooling1D(2)(model)	
+        #model = Lambda(lambda x: lp_normalization(x,p=2))(model)
+        # model = MaxPooling1D(2)(model)	
         # model = BilinearPooling(5,stride=2, trainable=True)(model)
-        # model = CenteredBilinearPooling2(25,stride=2, trainable=False, feature='mean_cov')(model)
-        # model = CenteredBilinearPoolingLowRank(11,stride=2, trainable=True, feature='mean_cov', rank=1)(model)
+        model = CenteredBilinearPooling2(5,stride=2, trainable=True, feature='mean_cov')(model)
+        # model = CenteredBilinearPoolingLowRank(25,stride=2, trainable=True, feature='mean_cov', rank=1)(model)
         
         
     # ---- Decoder ----
@@ -844,7 +911,7 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
 
 
     # optimizer = keras.optimizers.RMSprop(lr=0.01)
-    optimizer = keras.optimizers.Adam(lr=1e-2, decay=0.0)
+    optimizer = keras.optimizers.Adam(lr=0.01, decay=0.0)
     
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, sample_weight_mode="temporal", metrics=['accuracy'])
 

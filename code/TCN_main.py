@@ -29,7 +29,6 @@ import os
 # to only use cpu, umcomment the following lines
 #os.environ['CUDA_DEVICE_ORDER']='PCI_BUS_ID'
 #os.environ['CUDA_VISIBLE_DEVICES']=""
-os.system("module load cuda/9.2")
 
 
 from collections import OrderedDict
@@ -61,16 +60,15 @@ K.set_session(tf.Session(config=config))
 
 # ---------- Directories & User inputs --------------
 # Location of data/features folder
-#base_dir = os.path.expanduser("/home/yzhang/TemporalConvolutionalNetworks/")
-base_dir = os.path.expanduser("/home/yzhang/workspace/tensorflow_proj/TemporalConvolutionalNetworks/")
+base_dir = os.path.expanduser("/home/yzhang/TemporalConvolutionalNetworks/")
 
 save_predictions = [False, True][0]
 viz_predictions = [False, True][0]
 viz_weights = [False, True][0]
 
 # Set dataset and action label granularity (if applicable)
-dataset = ["50Salads", "JIGSAWS", "MERL", "GTEA"][0]
-granularity = ["eval", "mid"][-1]
+dataset = ["50Salads", "JIGSAWS", "MERL", "GTEA"][1]
+granularity = ["eval", "mid"][1]
 sensor_type = ["video", "sensors"][0]
 
 # Set model and parameters
@@ -250,6 +248,7 @@ if 1:
             ### implementation of keras
             model, param_str = tf_models.ED_Bilinear(n_nodes, conv, n_classes, n_feat, max_len, 
                                         causal=False, 
+                                        activation='norm_relu', return_param_str=True, batch_size=4) 
                                         activation='norm_relu', return_param_str=True) 
 
 
@@ -344,5 +343,6 @@ if 1:
     trial_metrics.print_scores()
     trial_metrics.print_trials()
     print()
-    print('-- low rank=1 |N|=11')
+    print(dataset+granularity+'-- TCN_ED_bilinear2, norm_relu, N=5,conv=25, lr=0.01')
+
 
