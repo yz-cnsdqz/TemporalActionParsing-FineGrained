@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+
 """
 This script takes features from a set of .mat files, trains a model, and outputs a set of action predictions for all time steps in the input.
 
@@ -27,7 +29,7 @@ import os
 # to only use cpu, umcomment the following lines
 #os.environ['CUDA_DEVICE_ORDER']='PCI_BUS_ID'
 #os.environ['CUDA_VISIBLE_DEVICES']=""
-
+os.system("module load cuda/9.2")
 
 
 from collections import OrderedDict

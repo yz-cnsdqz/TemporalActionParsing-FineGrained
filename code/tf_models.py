@@ -99,6 +99,8 @@ def temporal_convs_linear(n_nodes, conv_len, n_classes, n_feat, max_len,
 
 '''
 https://github.com/tensorflow/tensorflow/issues/6503
+Note: (1) GPU runing is considerably slow, 
+      (2) running on cpu does not converge and randomly terminates without reporting error.
 '''
 
 def matrix_symmetric(x):
@@ -793,10 +795,10 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
 
         
 
-        # model = MaxPooling1D(2)(model)	
+        model = MaxPooling1D(2)(model)	
         # model = BilinearPooling(5,stride=2, trainable=True)(model)
         # model = CenteredBilinearPooling2(25,stride=2, trainable=False, feature='mean_cov')(model)
-        model = CenteredBilinearPoolingLowRank(11,stride=2, trainable=True, feature='mean_cov', rank=1)(model)
+        # model = CenteredBilinearPoolingLowRank(11,stride=2, trainable=True, feature='mean_cov', rank=1)(model)
         
         
     # ---- Decoder ----
