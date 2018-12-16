@@ -1,3 +1,14 @@
+
+
+
+
+
+
+
+
+Our implementation is based on the following framework.
+-----
+
 # Temporal Convolutional Networks
 
 This code implements the video- and sensor-based action segmentation models from [Temporal Convolutional Networks for Action Segmentation and Detection](https://arxiv.org/abs/1611.05267) by
