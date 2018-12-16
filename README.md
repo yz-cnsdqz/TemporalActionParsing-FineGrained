@@ -1,3 +1,16 @@
+# Local Temporal Action Parsing for Fine-grained Action Parsing
+---------
+
+We propose a temporal local bilinear pooling method to replace max pooling in a temporal convolutional encoder-decoder network (see below). Our bilinear pooling is learnable, decoupled and has a analytical solution to halve the dimensionality. For more details, please refer to our arxiv paper
+
+    @article{zhang2018local,
+      title={Local Temporal Bilinear Pooling for Fine-grained Action Parsing},
+      author={Zhang, Yan and Tang, Siyu and Muandet, Krikamol and Jarvers, Christian and Neumann, Heiko},
+      journal={arXiv preprint arXiv:1812.01922},
+      year={2018}
+    }
+
+and a [video demo](https://ps.is.tuebingen.mpg.de/uploads_file/attachment/attachment/470/demo-bilinear.m4v), which is better to be opened by vlc.
 
 
 
@@ -6,7 +19,8 @@
 
 
 
-Our implementation is based on the following framework.
+
+Our implementation is based on the following framework. When use our github code, please cite their work as well.
 -----
 
 # Temporal Convolutional Networks
