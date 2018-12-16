@@ -21,9 +21,9 @@ and a [video demo](https://ps.is.tuebingen.mpg.de/uploads_file/attachment/attach
 * The tensorflow/keras models are implemented in __code/tf_models.py__
 
 
+## acknowledgement
 
 Our implementation is based on the following framework. When use our github code, please cite their work as well.
------
 
 # Temporal Convolutional Networks
 
