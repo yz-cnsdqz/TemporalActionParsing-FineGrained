@@ -19,6 +19,9 @@ clipped_relu = partial(relu, max_value=5)
 
 
 
+### import the module of compact bilinear pooling: https://github.com/murari023/tensorflow_compact_bilinear_pooling
+### we modify the code to fit the feature vector sequence tensor, i.e. [n_batches, n_frames, n_channels]
+from compact_bilinear_pooling import compact_bilinear_pooling_layer
 
 
 
@@ -40,7 +43,7 @@ def channel_normalization(x):
 def WaveNet_activation(x):
     tanh_out = Activation('tanh')(x)
     sigm_out = Activation('sigmoid')(x)  
-    return Merge(mode='mul')([tanh_out, sigm_out])
+    return keras.layers.Multiply()([tanh_out, sigm_out])
 
 
 
@@ -276,7 +279,7 @@ class EigenPooling(Layer):
             l = tf.matmul(u[:,:,:,:self.rank], tf.matrix_diag(s[:,:,:self.rank]))
         return l
     
->>>>>>> 1f5e3da9e78a1240cc989a1c898615cc2d103e57
+
     def compute_output_shape(self, input_shape):
         return (input_shape[0], input_shape[1], input_shape[2],self.rank)
 
@@ -297,6 +300,52 @@ def tensor_product_local(X,W):
     #return K.reshape(B,[-1,n_channels*n_channels])
     return B
 
+
+
+
+
+# def _get_tril_batch(D):
+#     # convert each element in the batch to lower triangular matrix
+#     # D has the size[ batch, dimension, dimension]
+
+#     mat_list = tf.unstack(D, axis=0)
+#     fun_tril = Lambda(lambda x: tf.matrix_band_part(x, -1,0))
+#     mat_tril_list = [ fun_tril(x) for x in mat_list ]
+
+#     return tf.stack(mat_tril_list, axis=0)
+
+
+
+
+
+
+def tensor_product_local_lowdim(X,W, tril_idx, scaling_mask):
+    # input: X in [batch, T, channel]
+    # input: w is a 1D vector with size (time, )
+    # compute X^T * W * X  (* is multiplication)
+    n_channels = X.shape[-1]
+    n_batches = X.shape[0]
+    
+    A = K.dot(K.permute_dimensions(X, [0,2,1]), W)
+    B = K.batch_dot(A,X)
+    B = B * scaling_mask
+    # B_vec = K.reshape(B, [-1, n_channels*n_channels]) # [batch (None), 1, d**2]
+ 
+    #ii = Lambda(lambda x: tf.tile(tf.range(x)[:, tf.newaxis], (1, n_channels)))(n_batches)
+
+    #B_list = Lambda(lambda x: tf.split(x, tf.shape(X)[0], axis=0))(B)
+
+    #B_vec_lowdim_list = [np.sqrt(2)*tf.gather_nd(x, tril_idx) for x in B_list]
+    #B_vec_lowdim = K.stack(B_vec_lowdim_list, axis=0)
+
+    B_vec_lowdim = tf.map_fn(lambda x: tf.gather_nd(x, tril_idx), B)
+    # print(B_vec_lowdim.shape)
+    return B_vec_lowdim*np.sqrt(2)
+
+
+
+
+
 def weighted_average_local(X,w):
     W = K.expand_dims(w,axis=-1)
     W = K.repeat_elements(W, X.shape[-1], axis=-1)
@@ -306,18 +355,37 @@ def weighted_average_local(X,w):
 
 
 
-def tensor_product(inputs, st_conv_filter_one, conv_len, stride=1):
+
+
+
+
+
+def tensor_product(inputs, st_conv_filter_one, conv_len, stride=1, low_dim=False):
     # input - [batch, time, channels]
     local_size=conv_len
     n_frames = inputs.shape[1]
+    n_batches = inputs.shape[0]
 
     x = ZeroPadding1D((local_size//2))(inputs)
     W = Lambda(lambda x: tf.diag(x))(st_conv_filter_one)
 
-    y = [ tensor_product_local(x[:,i:i+local_size,:],W) for i in range(0,n_frames,stride) ]
+    if not low_dim:
+        y = [ tensor_product_local(x[:,i:i+local_size,:],W) for i in range(0,n_frames,stride) ]
 
-    outputs =K.stack(y,axis=1) 
-    outputs = K.reshape(outputs, [-1,outputs.shape[1],outputs.shape[-2]*outputs.shape[-1] ])
+        outputs =K.stack(y,axis=1) 
+        outputs = K.reshape(outputs, [-1,outputs.shape[1],outputs.shape[-2]*outputs.shape[-1] ])
+    else:
+        n_channels = inputs.get_shape().as_list()[-1]
+        tril_idx = np.stack(np.tril_indices(n_channels), axis=0)
+        tril_idx2 = np.squeeze(np.split(tril_idx, tril_idx.shape[1], axis=1))
+
+
+        scaling_mask = np.expand_dims(np.eye(n_channels) / np.sqrt(2), axis=0)
+
+
+        y = [ tensor_product_local_lowdim(x[:,i:i+local_size,:],W, tril_idx2, scaling_mask ) for i in range(0,n_frames,stride) ]        
+        outputs =K.stack(y,axis=1) 
+
     return outputs
 
 
@@ -365,7 +433,7 @@ def tensor_product_with_mean(inputs, st_conv_filter_one, conv_len, feature, stri
 
 
 
-def tensor_product_with_mean2(inputs, st_conv_filter_one, st_conv_filter_two, conv_len, feature, stride=1, rank=None, approx='eigen'):
+def tensor_product_with_mean2(inputs, st_conv_filter_one, st_conv_filter_two, conv_len, feature, stride=1, rank=None, approx='eigen', low_dim = False):
     # input - [batch, time, channels]
 
     if feature not in ['mean','cov','mean_cov']:
@@ -382,6 +450,9 @@ def tensor_product_with_mean2(inputs, st_conv_filter_one, st_conv_filter_two, co
     mu_list = [weighted_average_local(x[:,i:i+local_size,:], st_conv_filter_one) for i in range(0,n_frames)]
     mu = K.stack(mu_list, axis=1)
 
+    print(feature)
+    print(low_dim)
+    
     
     if feature=='mean':
         return mu[:,::stride, :]
@@ -390,27 +461,43 @@ def tensor_product_with_mean2(inputs, st_conv_filter_one, st_conv_filter_two, co
     x_centered = inputs-mu
     x_centered = ZeroPadding1D(local_size//2)(x_centered)
     W = Lambda(lambda x: tf.diag(x))(st_conv_filter_two)
-    
-    sigma_list = [ tensor_product_local(x_centered[:,i:i+local_size,:],W) for i in range(0,n_frames,stride) ]
-    sigma =K.stack(sigma_list,axis=1)
+
+    if not low_dim:    
+        sigma_list = [ tensor_product_local(x_centered[:,i:i+local_size,:],W) for i in range(0,n_frames,stride) ]
+        sigma =K.stack(sigma_list,axis=1)
    
+        # low rank approximation
+        if rank is not None:
+            if rank >= local_size:
+                sys.exit('[ERROR]:the value of rank should not exceed or equal to the neighboring size')
 
-    # low rank approximation
-    if rank is not None:
-        if rank >= local_size:
-            sys.exit('[ERROR]:the value of rank should not exceed or equal to the neighboring size')
-
-        if approx is 'svd' or 'eigen':
-        #with K.tf.device('/cpu:0'):
-            sigma = EigenPooling(rank, method=approx)(sigma)
-        elif approx is 'sorting':
-            #todo
-            print('-- this method is under construction')
-        else:
-            sys.exit('[ERROR]: the low rank approximation type is not valid')
-    # print('sigma.shape='+str(sigma.shape))
+            if approx is 'svd' or 'eigen':
+            #with K.tf.device('/cpu:0'):
+                sigma = EigenPooling(rank, method=approx)(sigma)
+            elif approx is 'sorting':
+                #todo
+                print('-- this method is under construction')
+            else:
+                sys.exit('[ERROR]: the low rank approximation type is not valid')
+        print('sigma.shape='+str(sigma.shape))
  
-    sigma = K.reshape(sigma, [-1, sigma.shape[1], sigma.shape[-2]*sigma.shape[-1]])
+        sigma = K.reshape(sigma, [-1, sigma.shape[1], sigma.shape[-2]*sigma.shape[-1]])
+
+
+
+    else:
+        n_channels = inputs.get_shape().as_list()[-1]
+        tril_idx = np.stack(np.tril_indices(n_channels), axis=0)
+        tril_idx2 = np.squeeze(np.split(tril_idx, tril_idx.shape[1], axis=1))
+        scaling_mask = np.expand_dims(np.eye(n_channels) / np.sqrt(2), axis=0)
+
+        sigma_list = [ tensor_product_local_lowdim(x_centered[:,i:i+local_size,:],W, tril_idx2, scaling_mask ) for i in range(0,n_frames,stride) ]        
+        sigma =K.stack(sigma_list,axis=1) 
+        # print('sigma.shape='+str(sigma.shape))
+ 
+
+
+
  
     if feature == 'cov':
         return sigma
@@ -546,11 +633,12 @@ class BilinearConvLinear(Layer):
 
 
 class BilinearPooling(Layer):
-    def __init__(self, time_conv_size, stride, trainable=False, **kwargs):
+    def __init__(self, time_conv_size, stride, trainable=False, low_dim=False, **kwargs):
         
         self.time_conv_size = time_conv_size
         self.stride = stride
         self.trainable = trainable
+        self.low_dim = low_dim
         super(BilinearPooling, self).__init__(**kwargs)
 
 
@@ -575,13 +663,16 @@ class BilinearPooling(Layer):
             x = AveragePooling1D(self.stride)(x)
             x = Lambda(lambda x: lp_normalization(x, p=2))(x)
         else:
-            x = tensor_product(x, self.st_conv_filter_one, self.time_conv_size, self.stride)
+            x = tensor_product(x, self.st_conv_filter_one, self.time_conv_size, self.stride, self.low_dim)
             #x = Lambda(lambda x: lp_normalization(x, p=2))(x)
         
         return x
 
     def compute_output_shape(self, input_shape):
-        return(input_shape[0], input_shape[1]//self.stride, input_shape[2]*input_shape[2])
+        if self.low_dim:
+            return(input_shape[0], input_shape[1]//self.stride, input_shape[2]*(1+input_shape[2])//2)
+        else:
+            return(input_shape[0], input_shape[1]//self.stride, input_shape[2]*input_shape[2])
 
 
 
@@ -678,12 +769,14 @@ class CenteredBilinearPooling(Layer):
 
 class CenteredBilinearPooling2(Layer):
     ## mean and cov are with different parameters
-    def __init__(self, time_conv_size, stride, trainable=False, feature='mean_cov',**kwargs):
+    def __init__(self, time_conv_size, stride, trainable=False, feature='mean_cov',low_dim = False,**kwargs):
         
         self.time_conv_size = time_conv_size
         self.stride = stride
         self.trainable=trainable
         self.feature=feature
+        self.low_dim = low_dim
+        # print(self.low_dim)
         super(CenteredBilinearPooling2, self).__init__(**kwargs)
 
 
@@ -720,18 +813,25 @@ class CenteredBilinearPooling2(Layer):
 
 
             x = tensor_product_with_mean2(x, self.st_conv_filter_one, self.st_conv_filter_two, self.time_conv_size, 
-                                        self.feature, self.stride)
+                                        self.feature, self.stride, low_dim=self.low_dim)
             # x = Lambda(lambda x: lp_normalization(x, p=1))(x)
         
         return x
 
     def compute_output_shape(self, input_shape):
         if self.feature == 'mean_cov':
-            return(input_shape[0], input_shape[1]//self.stride, (1+input_shape[2])*input_shape[2])
+            if self.low_dim:
+                return (input_shape[0], input_shape[1]//self.stride, input_shape[2]+input_shape[2]*(input_shape[2]+1)//2)
+            else: 
+                return(input_shape[0], input_shape[1]//self.stride, (1+input_shape[2])*input_shape[2])
+
         elif self.feature == 'mean':
             return (input_shape[0], input_shape[1]//self.stride, input_shape[2])
         elif self.feature == 'cov':
-            return(input_shape[0], input_shape[1]//self.stride, input_shape[2]*input_shape[2])
+            if self.low_dim:
+                return(input_shape[0], input_shape[1]//self.stride, input_shape[2]*(1+input_shape[2])//2)
+            else:
+                return(input_shape[0], input_shape[1]//self.stride, input_shape[2]*input_shape[2])
         else:
             print('[ERROR]: feature for bilinear pooling is not valid')
             sys.exit()
@@ -787,7 +887,7 @@ class CenteredBilinearPoolingLowRank(Layer):
             x = tensor_product_with_mean2(x, self.st_conv_filter_one, self.st_conv_filter_two, self.time_conv_size, 
                                         self.feature, self.stride, rank=self.rank)
             # x = Lambda(lambda x: lp_normalization(x, p=2))(x)
-        
+            print('within hte model x.shape='+str(x.shape))
         return x
 
     def compute_output_shape(self, input_shape):
@@ -804,8 +904,51 @@ class CenteredBilinearPoolingLowRank(Layer):
 
 
 
+class LinearProjection(Layer):
+    def __init__(self, n_dim_target, **kwargs):
+    
+        self.n_dim_target = n_dim_target
+
+        super(LinearProjection, self).__init__(**kwargs)
 
 
+
+    def build(self, input_shape):
+        self.shape=input_shape
+        
+        self.proj_mat = self.add_weight(name='weights', shape=[self.shape[:-1], self.n_dim_target], 
+                                   initializer='glorot_normal',
+                                   trainable=True)
+
+
+        super(LinearProjection, self).build(input_shape)
+
+    def call(self, X):
+        # perform svd first
+        s,u,v = tf.svd(X, full_matrices=True)
+        
+        self.proj_mat = v[:,:,:self.n_dim_target]
+
+        return tf.matmul(X, proj_mat)
+
+
+    def compute_output_shape(self, input_shape):
+        
+        return(input_shape[0], input_shape[1], self.n_dim_target) 
+        
+
+
+
+
+def linear_projection_from_svd(X, n_dim_target):
+    # X- the input tensor with [n_batch, n_time, n_channel]
+
+    s,u,v = tf.svd(X, full_matrices=False)
+    proj_mat_0 = v[:,:,:n_dim_target]
+
+    # proj_mat = tf.Variable(proj_mat_0, name='linear_proj_w')
+
+    return tf.matmul(X, proj_mat_0)
 
 
 
@@ -813,10 +956,15 @@ class CenteredBilinearPoolingLowRank(Layer):
 def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len, 
             causal=False,
             activation='norm_relu',
-            return_param_str=False, batch_size = 4, dropout_ratio=0.3):
+            return_param_str=False,
+            pooling_type = 'dbilinear',
+            temporal_neighbour_size=5,
+            batch_size = 4, lr_init = 0.01,
+            low_dim=False,
+            dropout_ratio=0.3):
     n_layers = len(n_nodes)
 
-    inputs = Input(shape=(max_len,n_feat))
+    inputs = Input(shape=( max_len,n_feat))
     model = inputs
     model = Lambda(lambda x: tf.cast(x, dtype=tf.float32))(model)
     #u_connection = False
@@ -829,9 +977,9 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
         #if u_connection:
         #    branch.append(model)
 
-
         # Pad beginning of sequence to prevent usage of future data
         if causal: model = ZeroPadding1D((conv_len//2,0))(model)
+
         model = Conv1D(n_nodes[i], conv_len, padding='same')(model)
         # model = BilinearConvLinear(n_nodes[i], conv_len)(model)
         if causal: model = Cropping1D((0,conv_len//2))(model)
@@ -859,13 +1007,44 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
         else:
             model = Activation(activation)(model)    
 
-        
 
         #model = Lambda(lambda x: lp_normalization(x,p=2))(model)
-        # model = MaxPooling1D(2)(model)	
-        # model = BilinearPooling(5,stride=2, trainable=True)(model)
-        model = CenteredBilinearPooling2(5,stride=2, trainable=True, feature='mean_cov')(model)
-        # model = CenteredBilinearPoolingLowRank(25,stride=2, trainable=True, feature='mean_cov', rank=1)(model)
+        if pooling_type == 'max':
+            model = MaxPooling1D(2)(model)	
+        elif pooling_type == 'cbilinear':
+            model = BilinearPooling(temporal_neighbour_size,stride=2, trainable=True, low_dim=low_dim)(model)
+       
+
+        elif pooling_type == 'dbilinear':
+            model = CenteredBilinearPooling2(temporal_neighbour_size,stride=2, 
+                trainable=True, feature='mean_cov',low_dim=low_dim)(model)
+
+       
+
+        elif pooling_type == 'compact':
+            n_channels = model.shape[-1]
+            model = Lambda(lambda x: compact_bilinear_pooling_layer(x, x, output_dim = (n_channels+1)*n_channels//2, sum_pool=False, sequential=False ) )(model)
+            model = AveragePooling1D(2)(model)  
+
+
+        elif pooling_type == 'cbilinear_linear_proj':
+            n_channels = model.get_shape().as_list()[-1]
+            model = BilinearPooling(temporal_neighbour_size,stride=2, trainable=True, low_dim=False)(model)
+            n_dim_target = n_channels*(n_channels+1)//2
+            model = Conv1D(n_dim_target, 1, padding='same')(model)
+
+
+        elif pooling_type == 'dbilinear_linear_proj':
+            n_channels = model.get_shape().as_list()[-1]
+            model = CenteredBilinearPooling2(temporal_neighbour_size,stride=2, 
+                trainable=True, feature='mean_cov',low_dim=False)(model)
+            n_dim_target = n_channels*(n_channels+3)//2
+            model = Conv1D(n_dim_target, 1, padding='same')(model)
+
+        else:
+            sys.exit('[ERROR]: the pooling type is not supported.')
+
+
         
         
     # ---- Decoder ----
@@ -911,12 +1090,12 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
 
 
     # optimizer = keras.optimizers.RMSprop(lr=0.01)
-    optimizer = keras.optimizers.Adam(lr=0.01, decay=0.0)
+    optimizer = keras.optimizers.Adam(lr=lr_init, decay=0.0)
     
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, sample_weight_mode="temporal", metrics=['accuracy'])
 
     if return_param_str:
-        param_str = "ED-Bilinear_C{}_L{}".format(conv_len, n_layers)
+        param_str = "ED-Bilinear_{}_NeighborSize_{}_lowdim_{}".format(pooling_type, temporal_neighbour_size, str(low_dim))
         if causal:
             param_str += "_causal"
     
@@ -1140,7 +1319,7 @@ def Dilated_TCN(num_feat, num_classes, nb_filters, dilation_depth, nb_stacks, ma
         #skip_x = Convolution1D(nb_filters, 1, border_mode='same')(x)
         x  = Convolution1D(nb_filters, 1, border_mode='same')(x)
 
-        res_x = Merge(mode='sum')([original_x, x])
+        res_x = keras.layers.Add()([original_x, x])
 
         #return res_x, skip_x
         return res_x, x
@@ -1163,7 +1342,7 @@ def Dilated_TCN(num_feat, num_classes, nb_filters, dilation_depth, nb_stacks, ma
             skip_connections.append(skip_out)
 
     if use_skip_connections:
-        x = Merge(mode='sum')(skip_connections)
+        x = keras.layers.Add()(skip_connections)
     x = Activation('relu')(x)
     x = Convolution1D(nb_filters, tail_conv, border_mode='same')(x)
     x = Activation('relu')(x)
@@ -1192,7 +1371,7 @@ def BidirLSTM(n_nodes, n_classes, n_feat, max_len=None,
     # Birdirectional LSTM
     if not causal:
         model_backwards = LSTM(n_nodes, return_sequences=True, go_backwards=True)(inputs)
-        model = Merge(mode="concat")([model, model_backwards])
+        model = keras.layers.concatenate([model, model_backwards], axis=-1)
 
     model = TimeDistributed(Dense(n_classes, activation="softmax"))(model)
     

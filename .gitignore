@@ -1,3 +1,6 @@
 *.mat
 *.log
 *.sub
+*.out
+*.err
+*.txt

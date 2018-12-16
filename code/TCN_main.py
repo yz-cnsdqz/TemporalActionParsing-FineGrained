@@ -1,4 +1,3 @@
-#!/usr/bin/python3
 
 """
 This script takes features from a set of .mat files, trains a model, and outputs a set of action predictions for all time steps in the input.
@@ -30,6 +29,14 @@ import os
 #os.environ['CUDA_DEVICE_ORDER']='PCI_BUS_ID'
 #os.environ['CUDA_VISIBLE_DEVICES']=""
 
+import sys
+TCNB_pooling_type = sys.argv[1]
+TCNB_temporal_neigbour_size=int(sys.argv[2])
+TCNB_nb_epoch = int(sys.argv[3])
+TCNB_leaning_rate_init = float(sys.argv[4])
+TCNB_batch_size = int(sys.argv[5])
+
+
 
 from collections import OrderedDict
 
@@ -48,7 +55,6 @@ import tf_models, datasets, utils, metrics
 from utils import imshow_
 
 
-
 import tensorflow as tf
 import keras.backend as K
 config=tf.ConfigProto()
@@ -60,9 +66,9 @@ K.set_session(tf.Session(config=config))
 
 # ---------- Directories & User inputs --------------
 # Location of data/features folder
-base_dir = os.path.expanduser("/home/yzhang/TemporalConvolutionalNetworks/")
+base_dir = os.path.expanduser("/is/ps2/yzhang/workspaces/TemporalActionParsing-FineGrained/")
 
-save_predictions = [False, True][0]
+save_predictions = [False, True][1]
 viz_predictions = [False, True][0]
 viz_weights = [False, True][0]
 
@@ -81,7 +87,7 @@ causal = [False, True][0]
 #n_nodes = [64, 96] # default
 n_nodes = [64, 96]
 
-nb_epoch = 100
+nb_epoch = TCNB_nb_epoch
 video_rate = 3
 # conv = {'50Salads':25, "JIGSAWS":20, "MERL":5, "GTEA":25}[dataset] # original version
 conv = {'50Salads':25, "JIGSAWS":20, "MERL":5, "GTEA":25}[dataset]
@@ -106,6 +112,7 @@ if 1:
     data = datasets.Dataset(dataset, base_dir)
     trial_metrics = metrics.ComputeMetrics(overlap=.1, bg_class=bg_class)
 
+
     # Load data for each split
     for split in data.splits:
         if sensor_type=="video":
@@ -121,6 +128,11 @@ if 1:
             trial_metrics.set_classes(data.n_classes)
 
         n_classes = data.n_classes
+
+        print(n_classes)
+
+
+
         train_lengths = [x.shape[0] for x in X_train]
         test_lengths = [x.shape[0] for x in X_test]
         n_train = len(X_train)
@@ -139,7 +151,7 @@ if 1:
             AP_train = [svm.decision_function(x) for x in X_train]
             AP_test = [svm.decision_function(x) for x in X_test]
             param_str = "SVM"
-
+            ay_test = y_test
         # --------- CVPR model ----------
         elif model_type in ["tCNN", "ED-TCN", "DilatedTCN", "TDNN", "LSTM"]:
             # Go from y_t = {1...C} to one-hot vector (e.g. y_t = [0, 0, 1, 0])
@@ -168,8 +180,9 @@ if 1:
                 model, param_str = tf_models.TimeDelayNeuralNetwork(n_nodes, conv, n_classes, n_feat, max_len, 
                                    causal=causal, activation='tanh', return_param_str=True)
             elif model_type == "DilatedTCN":
-                model, param_str = tf_models.Dilated_TCN(n_feat, n_classes, n_nodes[0], L, B, max_len=max_len, 
-                                        causal=causal, return_param_str=True)
+                model, param_str = tf_models.Dilated_TCN(n_feat, n_classes, n_nodes[0], 5, 4, 
+                                    max_len=max_len, 
+                                    causal=causal, return_param_str=True)
             elif model_type == "LSTM":
                 model, param_str = tf_models.BidirLSTM(n_nodes[0], n_classes, n_feat, causal=causal, return_param_str=True)
 
@@ -184,6 +197,8 @@ if 1:
             P_train = [p.argmax(1) for p in AP_train]
             P_test = [p.argmax(1) for p in AP_test]
             ay_test = y_test
+
+
         # --------- ICRA model ----------
         elif model_type == 'LC-SC-CRF':
             try:
@@ -204,6 +219,7 @@ if 1:
             AP_test = [x.T for x in model.decision_function(X_test_T)]
 
             param_str = "LC-SC-CRF_C{}_S{}_I{}".format(conv, skip, model.inference_type)
+            ay_test = y_test
 
         # --------- DTW baseline model ----------
         elif model_type == "DTW":
@@ -248,15 +264,19 @@ if 1:
             ### implementation of keras
             model, param_str = tf_models.ED_Bilinear(n_nodes, conv, n_classes, n_feat, max_len, 
                                         causal=False, 
-                                        activation='norm_relu', return_param_str=True, batch_size=4) 
-                                        activation='norm_relu', return_param_str=True) 
+                                        activation='norm_relu', return_param_str=True, 
+                                        pooling_type = TCNB_pooling_type,
+                                        temporal_neighbour_size = TCNB_temporal_neigbour_size,
+                                        batch_size=TCNB_batch_size,
+                                        lr_init = TCNB_leaning_rate_init,
+                                        low_dim = False) 
 
 
-            model.fit(X_train_m, Y_train_, nb_epoch=nb_epoch, batch_size=4,
+            model.fit(X_train_m, Y_train_, nb_epoch=nb_epoch, batch_size=TCNB_batch_size,
                         verbose=1, sample_weight=M_train[:,:,0]) 
 
-            AP_train = model.predict(X_train_m, verbose=0)
-            AP_test = model.predict(X_test_m, verbose=0)
+            AP_train = model.predict(X_train_m,verbose=0)
+            AP_test = model.predict(X_test_m,verbose=0)
             AP_train = utils.unmask(AP_train, M_train)
             AP_test = utils.unmask(AP_test, M_test)
 
@@ -343,6 +363,8 @@ if 1:
     trial_metrics.print_scores()
     trial_metrics.print_trials()
     print()
-    print(dataset+granularity+'-- TCN_ED_bilinear2, norm_relu, N=5,conv=25, lr=0.01')
+    print(dataset+granularity+' ,pooling:'+TCNB_pooling_type+' ,N:'+str(TCNB_temporal_neigbour_size)+
+        ' ,batch_size:'+str(TCNB_batch_size)+' ,nb_epoch:'+str(TCNB_nb_epoch)+' ,learning_rate:'+
+        str(TCNB_leaning_rate_init))
 
 
