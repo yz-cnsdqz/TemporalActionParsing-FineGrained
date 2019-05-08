@@ -1,6 +1,6 @@
 # Local Temporal Action Parsing for Fine-grained Action Parsing
 
-We propose a temporal local bilinear pooling method to replace max pooling in a temporal convolutional encoder-decoder network (see below), so as to capture higher-order statistics for our fine-grained tasks. Our bilinear pooling is learnable, decoupled and has a analytical solution to halve the dimensionality. For more details, please refer to our arxiv paper
+We propose a temporal local bilinear pooling method to replace max pooling in a temporal convolutional encoder-decoder network (see below), so as to capture higher-order statistics for our fine-grained tasks. Our bilinear pooling is learnable, decoupled and has a analytical solution to halve the dimensionality. For more details, please refer to our paper
 
     @inproceedings{zhangbilinear2018,
       title = {Local Temporal Bilinear Pooling for Fine-grained Action Parsing},
@@ -12,7 +12,7 @@ We propose a temporal local bilinear pooling method to replace max pooling in a 
       month_numeric = {6}
     }
 
-and a [video demo](https://ps.is.tuebingen.mpg.de/uploads_file/attachment/attachment/470/demo-bilinear.m4v), which is better to be opened by vlc.
+and a [video demo](https://ps.is.tuebingen.mpg.de/uploads_file/attachment/attachment/470/demo-bilinear.m4v), which is better to be opened by vlc. We are still looking forward to optimizing the code.
 
 
 
