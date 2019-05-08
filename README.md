@@ -5,8 +5,8 @@ We propose a temporal local bilinear pooling method to replace max pooling in a 
     @article{zhang2018local,
       title={Local Temporal Bilinear Pooling for Fine-grained Action Parsing},
       author={Zhang, Yan and Tang, Siyu and Muandet, Krikamol and Jarvers, Christian and Neumann, Heiko},
-      journal={arXiv preprint arXiv:1812.01922},
-      year={2018}
+      journal={CVPR},
+      year={2019}
     }
 
 and a [video demo](https://ps.is.tuebingen.mpg.de/uploads_file/attachment/attachment/470/demo-bilinear.m4v), which is better to be opened by vlc.
