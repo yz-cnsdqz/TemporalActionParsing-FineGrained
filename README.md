@@ -21,7 +21,7 @@ and a [video demo](https://ps.is.tuebingen.mpg.de/uploads_file/attachment/attach
 * The frontend file to run the code is __code/TCN_main.py__
 * Put your features to the path of __features/{dataset name}/{feature name}/{Split_i}/{*.mat}__
 * Put your dataset splits to the path of __splits/{dataset name}/{Split_i}/{train, test}.txt__, in which entries in the txt files should match the *.mat filenames.
-* The tensorflow/keras models are implemented in __code/tf_models.py__
+* The tensorflow/keras models are implemented in __code/tf_models.py__, in which other pooling methods are also implemented but not used. 
 
 
 ## License
