@@ -2,14 +2,12 @@
 
 We propose a temporal local bilinear pooling method to replace max pooling in a temporal convolutional encoder-decoder network (see below), so as to capture higher-order statistics for our fine-grained tasks. Our bilinear pooling is learnable, decoupled and has a analytical solution to halve the dimensionality. For more details, please refer to our paper
 
-    @inproceedings{zhangbilinear2018,
-      title = {Local Temporal Bilinear Pooling for Fine-grained Action Parsing},
-      author = {Zhang, Yan and Tang, Siyu and Muandet, Krikamol and Jarvers, Christian and Neumann, Heiko},
-      booktitle = {Proceedings IEEE Conf. on Computer Vision and Pattern Recognition (CVPR)},
-      month = jun,
-      year = {2019},
-      url = {https://arxiv.org/abs/1812.01922},
-      month_numeric = {6}
+    @InProceedings{Zhang_2019_CVPR,
+    author = {Zhang, Yan and Tang, Siyu and Muandet, Krikamol and Jarvers, Christian and Neumann, Heiko},
+    title = {Local Temporal Bilinear Pooling for Fine-Grained Action Parsing},
+    booktitle = {The IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+    month = {June},
+    year = {2019}
     }
 
 and a [video demo](https://ps.is.tuebingen.mpg.de/uploads_file/attachment/attachment/470/demo-bilinear.m4v), which is better to be opened by vlc. We are still looking forward to optimizing the code.
