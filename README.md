@@ -1,3 +1,36 @@
+# Local Temporal Action Parsing for Fine-grained Action Parsing
+
+We propose a temporal local bilinear pooling method to replace max pooling in a temporal convolutional encoder-decoder network (see below), so as to capture higher-order statistics for our fine-grained tasks. Our bilinear pooling is learnable, decoupled and has a analytical solution to halve the dimensionality. For more details, please refer to our paper
+
+    @InProceedings{Zhang_2019_CVPR,
+    author = {Zhang, Yan and Tang, Siyu and Muandet, Krikamol and Jarvers, Christian and Neumann, Heiko},
+    title = {Local Temporal Bilinear Pooling for Fine-Grained Action Parsing},
+    booktitle = {The IEEE Conference on Computer Vision and Pattern Recognition (CVPR)},
+    month = {June},
+    year = {2019}
+    }
+
+and a [video demo](https://ps.is.tuebingen.mpg.de/uploads_file/attachment/attachment/470/demo-bilinear.m4v), which is better to be opened by vlc. We are still looking forward to optimizing the code.
+
+
+
+## getting started
+* The input to the network is the time sequence of frame-wise features. 
+* The frontend file to run the code is __code/TCN_main.py__
+* Put your features to the path of __features/{dataset name}/{feature name}/{Split_i}/{*.mat}__
+* Put your dataset splits to the path of __splits/{dataset name}/{Split_i}/{train, test}.txt__, in which entries in the txt files should match the *.mat filenames.
+* The tensorflow/keras models are implemented in __code/tf_models.py__, in which other pooling methods are also implemented but not used. 
+
+
+## License
+This project is licensed under the MIT License - see the LICENSE.md file for details.
+
+
+
+## acknowledgement
+
+Our implementation is based on the following framework. When use our github code, please cite their work as well.
+
 # Temporal Convolutional Networks
 
 This code implements the video- and sensor-based action segmentation models from [Temporal Convolutional Networks for Action Segmentation and Detection](https://arxiv.org/abs/1611.05267) by
