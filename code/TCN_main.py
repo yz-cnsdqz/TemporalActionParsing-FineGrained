@@ -30,13 +30,16 @@ import os
 #os.environ['CUDA_VISIBLE_DEVICES']=""
 
 import sys
+import keras
 TCNB_pooling_type = sys.argv[1]
-TCNB_temporal_neigbour_size=int(sys.argv[2])
+TCNB_temporal_neigbour_size=float(sys.argv[2])
 TCNB_nb_epoch = int(sys.argv[3])
 TCNB_leaning_rate_init = float(sys.argv[4])
 TCNB_batch_size = int(sys.argv[5])
+TCNB_constraint_type = int(sys.argv[6])
+TCNB_dataset = sys.argv[7]
 
-
+outfile = sys.argv[8]
 
 from collections import OrderedDict
 
@@ -49,6 +52,7 @@ import sklearn.metrics as sm
 from sklearn.svm import LinearSVC
 
 from keras.utils import np_utils
+from keras.callbacks import LambdaCallback
 
 # TCN imports 
 import tf_models, datasets, utils, metrics
@@ -62,7 +66,18 @@ config.gpu_options.allow_growth=True
 K.set_session(tf.Session(config=config))
 
 
+#-------------------- calculate rum time ----------------#
+from time import time
 
+class TimeCallback(keras.callbacks.Callback):
+    def __init__(self):
+        self.logs=[]
+    def on_batch_begin(self,poch, logs={}):
+        self.starttime=time()
+    def on_batch_end(self,poch, logs={}):
+        self.logs.append(time()-self.starttime)
+
+cbtime = TimeCallback()
 
 # ---------- Directories & User inputs --------------
 # Location of data/features folder
@@ -73,24 +88,29 @@ viz_predictions = [False, True][0]
 viz_weights = [False, True][0]
 
 # Set dataset and action label granularity (if applicable)
-dataset = ["50Salads", "JIGSAWS", "MERL", "GTEA"][1]
+# dataset = ["50Salads", "JIGSAWS", "MERL", "GTEA"][0]
+dataset = TCNB_dataset
+if dataset not in ["50Salads", "JIGSAWS", "MERL", "GTEA"]:
+    print('[Error] dataset is not avaliable')
+    sys.exit()
+
 granularity = ["eval", "mid"][1]
 sensor_type = ["video", "sensors"][0]
 
 # Set model and parameters
-model_type = ["SVM", "LSTM", "LC-SC-CRF", "tCNN",  "DilatedTCN", "ED-TCN", "TDNN", "ED-Bilinear"][-1]
+model_type = ["SVM", "LSTM", "LC-SC-CRF", "tCNN",  "DilatedTCN", "ED-TCN", "TDNN", "ED-Bilinear", "ED_Residual_Bilinear"][-2]
 # causal or acausal? (If acausal use Bidirectional LSTM)
 causal = [False, True][0]
 
 # How many latent states/nodes per layer of network
 # Only applicable to the TCNs. The ECCV and LSTM  model suses the first element from this list.
-#n_nodes = [64, 96] # default
-n_nodes = [64, 96]
+n_nodes = [64, 96] # default
+# n_nodes = [64,128]
 
 nb_epoch = TCNB_nb_epoch
 video_rate = 3
-# conv = {'50Salads':25, "JIGSAWS":20, "MERL":5, "GTEA":25}[dataset] # original version
-conv = {'50Salads':25, "JIGSAWS":20, "MERL":5, "GTEA":25}[dataset]
+conv = {'50Salads':25, "JIGSAWS":20, "MERL":5, "GTEA":25}[dataset] # original version
+# conv = {'50Salads':50, "JIGSAWS":20, "MERL":5, "GTEA":25}[dataset]
 
 # Which features for the given dataset
 features = "SpatialCNN"
@@ -104,6 +124,7 @@ if dataset == "50Salads":
 
 
 
+
 # ------------------------------------------------------------------
 # Evaluate using different filter lengths
 if 1:
@@ -111,7 +132,7 @@ if 1:
     # Initialize dataset loader & metrics
     data = datasets.Dataset(dataset, base_dir)
     trial_metrics = metrics.ComputeMetrics(overlap=.1, bg_class=bg_class)
-
+    trial_metrics_train = metrics.ComputeMetrics(overlap=.1, bg_class=bg_class,task='train')
 
     # Load data for each split
     for split in data.splits:
@@ -120,17 +141,21 @@ if 1:
         else:
             feature_type = "S"
 
+        ## stops training after the first split
+        if split != 'Split_1':
+           print('terminate')
+           sys.exit()
+
         X_train, y_train, X_test, y_test = data.load_split(features, split=split, 
                                                             sample_rate=video_rate, 
                                                             feature_type=feature_type)
 
         if trial_metrics.n_classes is None:
             trial_metrics.set_classes(data.n_classes)
-
+            trial_metrics_train.set_classes(data.n_classes)
         n_classes = data.n_classes
 
         print(n_classes)
-
 
 
         train_lengths = [x.shape[0] for x in X_train]
@@ -266,14 +291,110 @@ if 1:
                                         causal=False, 
                                         activation='norm_relu', return_param_str=True, 
                                         pooling_type = TCNB_pooling_type,
+                                        constraint_type = TCNB_constraint_type,
                                         temporal_neighbour_size = TCNB_temporal_neigbour_size,
                                         batch_size=TCNB_batch_size,
                                         lr_init = TCNB_leaning_rate_init,
                                         low_dim = False) 
+            # print(model.summary())
+            # print(model.layers)
+            # pooling = model.layers[6]
+            # # print(pooling.name)
+            # weight_list = pooling.get_weights()
+            # print(weight_list[0].shape)
+            
+            # weights_list = []
+            # print_weights = LambdaCallback(on_epoch_end=lambda batch, logs: weights_list.append(model.layers[6].get_weights()[0]))   
+
+            # tensor_pooling_layers = [x for x in model.layers if 'tensor_relaxation' in x.name]
+            # print(tensor_pooling_layers)
+
+            # pooling = model.layers[6]
+            # weight_list = pooling.get_weights()
+            # # # # print(weight_list[0])
+            # print('--before training: max={}, min={}'.format(np.max(weight_list[0]),np.min(weight_list[0]) ))
+
+            model.fit(X_train_m, Y_train_, nb_epoch=nb_epoch,batch_size=TCNB_batch_size,
+            verbose=0, sample_weight=M_train[:,:,0], callbacks=[cbtime])
+            # callbacks=[print_weights]) 
+
+            print(np.mean(cbtime.logs[1:]))
+            print(len(cbtime.logs))
 
 
-            model.fit(X_train_m, Y_train_, nb_epoch=nb_epoch, batch_size=TCNB_batch_size,
-                        verbose=1, sample_weight=M_train[:,:,0]) 
+
+
+            # for ij in range(0,len(weights_list), 60):
+            #     plt.figure()
+            #     plt.imshow(weights_list[ij])
+                
+            # plt.show()  
+
+            # print(weights_list[0])
+            # print(weights_list[-1])
+
+
+            # plt.figure()
+            # plt.imshow(weights_list[0])
+
+            # plt.figure()
+            # plt.imshow(weights_list[0]>0)
+
+            # # plt.figure()
+            # # plt.imshow(weights_list[-1])
+            # plt.show()
+
+
+
+            ## extract tensor decomposition layer weights
+
+            # ### the first pooling layer
+            # pooling = model.layers[6]
+            # weight_list = pooling.get_weights()
+            # # print(weight_list)
+            # print('--after training: max={}, min={}'.format(np.max(weight_list[0]),np.min(weight_list[0]) ))
+            # print('--after training: scalor={}'.format(weight_list[2]))
+            # print(pooling.name)
+
+
+
+
+            # print(model.layers)
+
+            ####-------------------code for visualize intermediate layers of the net-------------------#### 
+            # print(model.layers)
+            # conv_output = model.layers[2].output
+            # pooling_output = model.layers[6].output
+            # functors = [K.function([model.input, K.learning_phase()], [conv_output, pooling_output]) ]
+
+            # if True:
+            #     model_weight_file=base_dir + 'model_{}_{}.h5'.format(TCNB_pooling_type,TCNB_temporal_neigbour_size)
+            #     if os.path.exists(model_weight_file):
+            #        print('- model is already trained. Weights are loaded.')
+            #        model.load_weights(model_weight_file)
+            #     else: 
+            #        print('- train model from scratch.')
+            #        model.fit(X_train_m, Y_train_, nb_epoch=nb_epoch, batch_size=TCNB_batch_size,
+            #             verbose=0, sample_weight=M_train[:,:,0]) 
+            #        model.save_weights(model_weight_file)
+
+            # layer_outs=[func([X_train_m, 1.]) for func in functors]
+            # print(len(layer_outs))
+            # print(layer_outs[0][0].shape)
+            # print(layer_outs[0][1].shape)
+
+            # layer_outs_unmask=utils.unmask(layer_outs[0][0], M_train)
+            # #pooling_outs_unmask=utils.unmask(np.repeat(layer_outs[0][1],2,axis=1), M_train)
+
+            # print(layer_outs_unmask[0].shape)
+            # layer_outputs_dict={}
+            # layer_outputs_dict['conv_out']=layer_outs_unmask[0]
+            # layer_outputs_dict['pool_out']=np.repeat(layer_outs[0][1][0],1,axis=0)
+            # layer_outputs_dict['input']=utils.unmask(X_train_m, M_train)[0]
+            # layer_outputs_dict['gt'] = np.array(y_train[0]) 
+
+            # sio.savemat(base_dir+'conv_output_{}.mat'.format(TCNB_pooling_type), layer_outputs_dict)
+
 
             AP_train = model.predict(X_train_m,verbose=0)
             AP_test = model.predict(X_test_m,verbose=0)
@@ -282,6 +403,7 @@ if 1:
 
             P_train = [p.argmax(1) for p in AP_train]
             P_test = [p.argmax(1) for p in AP_test]
+            ay_train = y_train
             ay_test = y_test
 
             ### implementation of tensorflow
@@ -299,7 +421,47 @@ if 1:
             # P_test = [p.argmax(1) for p in AP_test]
             # param_str = "ED-Bilinear_Length{:d}_Conv{:d}".format(4*(conv+1), conv)
 
+        elif model_type in ["ED_Residual_Bilinear"]:
+            # Go from y_t = {1...C} to one-hot vector (e.g. y_t = [0, 0, 1, 0])
+            Y_train = [np_utils.to_categorical(y, n_classes) for y in y_train]
+            Y_test = [np_utils.to_categorical(y, n_classes) for y in y_test]
 
+            # In order process batches simultaneously all data needs to be of the same length
+            # So make all same length and mask out the ends of each.
+            n_layers = len(n_nodes)
+            max_len = max(np.max(train_lengths), np.max(test_lengths))
+            max_len = int(np.ceil(max_len / (2**n_layers)))*2**n_layers
+            print("Max length:", max_len)
+
+            X_train_m, Y_train_, M_train = utils.mask_data(X_train, Y_train, max_len, mask_value=-1)
+            X_test_m, Y_test_, M_test = utils.mask_data(X_test, Y_test, max_len, mask_value=-1)
+
+
+
+            ### implementation of keras
+            model, param_str = tf_models.ED_Residual_Bilinear(n_nodes, conv, n_classes, n_feat, max_len, 
+                                        activation='norm_relu', return_param_str=True, 
+                                        pooling_type = TCNB_pooling_type,
+                                        temporal_neighbour_size = TCNB_temporal_neigbour_size,
+                                        batch_size=TCNB_batch_size,
+                                        lr_init = TCNB_leaning_rate_init,
+                                        low_dim = False) 
+
+
+            model.fit(X_train_m, Y_train_, nb_epoch=nb_epoch,batch_size=TCNB_batch_size,
+                        verbose=1, sample_weight=M_train[:,:,0]) 
+
+
+#            epochs = X_test_m.shape[0] // TCNB_batch_size
+
+            # AP_train = model.predict(X_train_m,verbose=0)
+            AP_test = model.predict(X_test_m,verbose=0)
+            # AP_train = utils.unmask(AP_train, M_train)
+            AP_test = utils.unmask(AP_test, M_test)
+
+            # P_train = [p.argmax(1) for p in AP_train]
+            P_test = [p.argmax(1) for p in AP_test]
+            ay_test = y_test
     
         else:
             print("Model not available:", model_type)
@@ -308,7 +470,8 @@ if 1:
         print(param_str)
 
         # --------- Metrics ----------    
-        trial_metrics.add_predictions(split, P_test, ay_test)       
+        trial_metrics_train.add_predictions(split, P_train, ay_train)
+        trial_metrics.add_predictions(split, P_test, ay_test)
         trial_metrics.print_trials()
         print()
 
@@ -360,8 +523,11 @@ if 1:
                     # Output weights at the first layer
 
     print()
-    trial_metrics.print_scores()
+    trial_metrics.print_scores(to_file=outfile)
     trial_metrics.print_trials()
+    # print('--------------- train acc --------------')
+    # trial_metrics_train.print_scores(to_file=outfile)
+    # trial_metrics_train.print_trials()
     print()
     print(dataset+granularity+' ,pooling:'+TCNB_pooling_type+' ,N:'+str(TCNB_temporal_neigbour_size)+
         ' ,batch_size:'+str(TCNB_batch_size)+' ,nb_epoch:'+str(TCNB_nb_epoch)+' ,learning_rate:'+

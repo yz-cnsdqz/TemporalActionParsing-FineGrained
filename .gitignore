@@ -4,3 +4,9 @@
 *.out
 *.err
 *.txt
+*.pyc
+*.h5
+*.pdf
+*.mat
+code/__pycache__
+code/results

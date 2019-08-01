@@ -18,14 +18,14 @@ class ComputeMetrics:
     trials = []
 
 
-    def __init__(self, metric_types=None, overlap=.1, bg_class=None, n_classes=None):
+    def __init__(self, metric_types=None, overlap=.1, bg_class=None, n_classes=None, task='test'):
         if metric_types is not None:
             self.metric_types = metric_types
 
         self.scores = OrderedDict()
         self.attrs = {"overlap":overlap, "bg_class":bg_class, "n_classes":n_classes}
         self.trials = []
-
+        self.task=task
         for m in self.metric_types:
             self.scores[m] = OrderedDict()
 
@@ -60,13 +60,19 @@ class ComputeMetrics:
             print(txt)
 
 
-    def print_scores(self, metric_types=None):
+    def print_scores(self, metric_types=None, to_file=None):
         if metric_types is None:
             metric_types = self.metric_types
 
         scores = [np.mean([self.scores[m][trial] for trial in self.trials]) for m in metric_types]
         txt = "All: " + " ".join(["{}:{:.04}".format(metric_types[i], scores[i]) for i in range(len(metric_types))])
         print(txt)
+        print(to_file)
+        if to_file != 'None':
+            filename=self.task+'_'+to_file
+            with open(filename, 'a') as f:
+                f.write('{},{},{}'.format(scores[0], scores[1], scores[2]))
+                f.write('\n')
 
 
 

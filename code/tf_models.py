@@ -15,6 +15,10 @@ from keras import backend as K
 
 from keras.activations import relu
 from functools import partial
+
+from RP_Bilinear_Pooling import RPBinaryPooling2, RPTrinaryPooling,RPGaussianPooling,MultiModalLowRankPooling,RPLearnable, FBM
+
+
 clipped_relu = partial(relu, max_value=5)
 
 
@@ -22,7 +26,7 @@ clipped_relu = partial(relu, max_value=5)
 ### import the module of compact bilinear pooling: https://github.com/murari023/tensorflow_compact_bilinear_pooling
 ### we modify the code to fit the feature vector sequence tensor, i.e. [n_batches, n_frames, n_channels]
 from compact_bilinear_pooling import compact_bilinear_pooling_layer
-
+from adaptive_correlation_pooling import InceptionK_module
 
 
 
@@ -387,6 +391,10 @@ def tensor_product(inputs, st_conv_filter_one, conv_len, stride=1, low_dim=False
         outputs =K.stack(y,axis=1) 
 
     return outputs
+
+
+
+
 
 
 
@@ -843,6 +851,79 @@ class CenteredBilinearPooling2(Layer):
 
 
 
+
+
+
+
+class BilinearPoolingFast(Layer):
+    def __init__(self, time_conv_size, stride, trainable=False, low_dim=False, **kwargs):
+        
+        self.time_conv_size = time_conv_size
+        self.stride = stride
+        self.trainable = trainable
+        self.low_dim = low_dim
+        super(BilinearPoolingFast, self).__init__(**kwargs)
+
+
+    def build(self, input_shape):
+        self.shape=input_shape
+        if not self.trainable:
+            self.st_conv_filter_one = self.add_weight(name='conv_kernel', shape=[1,self.time_conv_size,1], 
+                                               initializer=keras.initializers.Constant(value=1.0/self.time_conv_size),
+                                               trainable=False)
+        else:
+            self.st_conv_filter_one = self.add_weight(name='conv_kernel', shape=[1,self.time_conv_size,1], 
+                                                initializer='glorot_normal',
+                                                trainable=True)
+        
+        super(BilinearPoolingFast, self).build(input_shape)
+
+
+
+    def call(self, x):
+
+        input_shape = x.get_shape().as_list()
+        
+        # first compute xx'
+        x_r = K.expand_dims(x, axis=-1) * K.expand_dims(x, axis=-2)
+        x_r = K.reshape(x_r, [-1,input_shape[1],input_shape[2]**2])
+
+
+
+        if not self.trainable:
+            x = AveragePooling1D(pool_size=self.time_conv_size, strides=self.stride)(x_r)
+
+        else:
+            # convfilter = K.expand_dims(self.st_conv_filter_one, axis=-1)
+            # convfilter = K.repeat_elements(self.st_conv_filter_one, input_shape[2]**2, axis=-1) # [1,timeconvsize, D2]
+            # convfilter = K.expand_dims(convfilter, axis=0)    
+
+            x_r_padding = keras.layers.ZeroPadding1D( self.time_conv_size//2 )(x_r)
+
+            x_r_list = [   K.sum(self.st_conv_filter_one * x_r_padding[:,i:i+self.time_conv_size, :], axis=1) for i in range(0,input_shape[1],self.stride)]
+            x_r = K.stack(x_r_list, axis=1)
+            print(x_r.shape)
+            # x = AveragePooling1D(pool_size=self.time_conv_size, strides=self.stride)(x_r)            
+
+        return x_r
+
+    def compute_output_shape(self, input_shape):
+        if self.low_dim:
+            return(input_shape[0], input_shape[1]//self.stride, input_shape[2]*(1+input_shape[2])//2)
+        else:
+            return(input_shape[0], input_shape[1]//self.stride, input_shape[2]*input_shape[2])
+
+
+
+
+
+
+
+
+
+
+
+
 class CenteredBilinearPoolingLowRank(Layer):
     ## low rank approximation of the Cov matrix
     def __init__(self, time_conv_size, stride, trainable=False, feature='mean_cov', rank=1, **kwargs):
@@ -940,6 +1021,15 @@ class LinearProjection(Layer):
 
 
 
+
+
+
+
+
+        
+
+
+
 def linear_projection_from_svd(X, n_dim_target):
     # X- the input tensor with [n_batch, n_time, n_channel]
 
@@ -953,44 +1043,95 @@ def linear_projection_from_svd(X, n_dim_target):
 
 
 
+
+
+
+
+
+
+
+
+def my_matmul(tensors):
+    return tf.matmul(tensors[0], tensors[1])
+
+def my_matmul_output_shape(input_shapes):
+    return (input_shapes[0][0], input_shapes[0][1], input_shapes[0][2]**2)
+
+
+
+
+
+
+
+
+from keras.constraints import Constraint
+
+class non_neg_unit_norm (Constraint):
+    def __init__(self, axis=0):
+        self.axis=axis
+
+    def __call__(self, w):
+        # w *= K.cast(K.greater_equal(w, 0.), K.floatx()) # non negative constraint
+
+        # hard thresholding: when x \in [-0.5, -0.5], set to 0
+        # w *= K.cast(K.greater_equal(K.abs(w), 0.333), K.floatx())
+
+        # # l2 norm
+        w = w / (K.epsilon() + K.sqrt(K.sum(K.square(w),
+                                                axis=self.axis,
+                                                keepdims=True)))
+        
+        # w *= K.cast(K.greater_equal(w, 0.), K.floatx()) # non negative constraint
+
+        # l1 norm
+        # w = w / (K.epsilon() + K.sum(w,
+        #                           axis=self.axis,
+        #                           keepdims=True))
+
+        return w
+
+
+
+
+
 def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len, 
             causal=False,
             activation='norm_relu',
             return_param_str=False,
             pooling_type = 'dbilinear',
+            constraint_type='tanh',
             temporal_neighbour_size=5,
             batch_size = 4, lr_init = 0.01,
             low_dim=False,
             dropout_ratio=0.3):
-    n_layers = len(n_nodes)
 
-    inputs = Input(shape=( max_len,n_feat))
+
+    # default dropout is 0.3
+    n_layers = len(n_nodes)
+    inputs = Input(shape=(max_len,n_feat))
     model = inputs
     model = Lambda(lambda x: tf.cast(x, dtype=tf.float32))(model)
-    #u_connection = False
-    #branch = []
+
+    mat_factor_list = []
 
     # ---- Encoder ----
     for i in range(n_layers):
 
-
-        #if u_connection:
-        #    branch.append(model)
-
         # Pad beginning of sequence to prevent usage of future data
         if causal: model = ZeroPadding1D((conv_len//2,0))(model)
-
-        model = Conv1D(n_nodes[i], conv_len, padding='same')(model)
-        # model = BilinearConvLinear(n_nodes[i], conv_len)(model)
+        model= Conv1D(n_nodes[i], kernel_size=conv_len, padding='same')(model)
         if causal: model = Cropping1D((0,conv_len//2))(model)
         
         # model = Lambda(lambda x: lp_normalization(x, p=2))(model)
 
         if dropout_ratio != 0:
             model = SpatialDropout1D(dropout_ratio)(model)
-        
+        # elif dropout_ratio != 0 and i==1:
+        #     model = SpatialDropout1D(0.4)(model)
+
+
         if activation=='norm_relu': 
-            model = Activation('relu')(model)            
+            model = Activation('relu')(model)
             model = Lambda(channel_normalization, name="encoder_norm_{}".format(i))(model)
         elif activation=='wavenet': 
             model = WaveNet_activation(model) 
@@ -1008,9 +1149,13 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
             model = Activation(activation)(model)    
 
 
+
         #model = Lambda(lambda x: lp_normalization(x,p=2))(model)
         if pooling_type == 'max':
+            print(model.shape)
             model = MaxPooling1D(2)(model)	
+            print(model.shape)
+
         elif pooling_type == 'cbilinear':
             model = BilinearPooling(temporal_neighbour_size,stride=2, trainable=True, low_dim=low_dim)(model)
        
@@ -1019,11 +1164,13 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
             model = CenteredBilinearPooling2(temporal_neighbour_size,stride=2, 
                 trainable=True, feature='mean_cov',low_dim=low_dim)(model)
 
-       
 
         elif pooling_type == 'compact':
-            n_channels = model.shape[-1]
-            model = Lambda(lambda x: compact_bilinear_pooling_layer(x, x, output_dim = (n_channels+1)*n_channels//2, sum_pool=False, sequential=False ) )(model)
+            n_channels = model.get_shape().as_list()[-1]
+            out_dim = (n_channels//2)**2*constraint_type
+            # model = Lambda(lambda x: compact_bilinear_pooling_layer(x, x, output_dim = (n_channels+1)*n_channels//2, sum_pool=False, sequential=False ) )(model)
+            model = Lambda(lambda x: compact_bilinear_pooling_layer(x, x, output_dim = out_dim, 
+                                                                    sum_pool=False, sequential=False ) )(model)
             model = AveragePooling1D(2)(model)  
 
 
@@ -1041,24 +1188,92 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
             n_dim_target = n_channels*(n_channels+3)//2
             model = Conv1D(n_dim_target, 1, padding='same')(model)
 
+
+
+
+
+
+        elif pooling_type == 'RPBinary':
+            in_dim = model.get_shape().as_list()[-1]
+            n_basis = int(temporal_neighbour_size*round(np.sqrt(in_dim)))
+            pooling_layer= RPBinaryPooling2(n_basis=n_basis, # in_dim//2
+                                             n_components=constraint_type,
+                                             use_normalization=False,
+                                             activation=None,
+                                             out_fusion_type='avg', # or max or w-sum
+                                             stride=2, 
+                                             time_window_size=5)
+
+            model = pooling_layer(model)
+            # model = SpatialDropout1D(rate=0.5)(model)
+
+
+
+        elif pooling_type == 'RPGaussian':
+            in_dim = model.get_shape().as_list()[-1]
+            n_basis = int(temporal_neighbour_size*round(np.sqrt(in_dim)))
+            pooling_layer= RPGaussianPooling(n_basis=n_basis, #in_dim//2
+                                             n_components=constraint_type,
+                                             init_sigma=np.sqrt(in_dim),
+                                             use_normalization=False,
+                                             out_fusion_type='avg', # or max or w-sum
+                                             stride=2, 
+                                             time_window_size=5)
+
+            model = pooling_layer(model)
+            # model = SpatialDropout1D(rate=0.5)(model)
+
+        elif pooling_type == 'RPLearnable':
+            in_dim = model.get_shape().as_list()[-1]
+            pooling_layer= RPLearnable(n_basis=in_dim//2,
+                                         n_components=constraint_type,
+                                         use_normalization=False,
+                                         out_fusion_type='avg', # or max or w-sum
+                                         stride=2, 
+                                         time_window_size=5)
+
+            model = pooling_layer(model)
+
+
+        elif pooling_type == 'MLB':
+
+            in_dim = model.get_shape().as_list()[-1]
+            pooling_layer= MultiModalLowRankPooling(n_basis=(in_dim//2)**2*constraint_type,
+                                             n_components=constraint_type,
+                                             use_normalization=False,
+                                             out_fusion_type='avg', # or max or w-sum
+                                             stride=2, 
+                                             time_window_size=5)
+
+            model = pooling_layer(model)
+
+        elif pooling_type == 'FBM':
+
+            in_dim = model.get_shape().as_list()[-1]
+            n_basis = int(in_dim//2)
+            pooling_layer= FBM(in_dim=in_dim,
+                                out_dim = int(temporal_neighbour_size*n_basis**2))
+
+            model = pooling_layer(model)
+            print(model.shape)
+
         else:
             sys.exit('[ERROR]: the pooling type is not supported.')
 
 
-        
-        
+
     # ---- Decoder ----
     for i in range(n_layers):
         model = UpSampling1D(2)(model)
-        # model = BilinearUpsampling(2)(model)
         if causal: model = ZeroPadding1D((conv_len//2,0))(model)
         model = Conv1D(n_nodes[-i-1], conv_len, padding='same')(model)
-        # model = BilinearConvLinear(n_nodes[-i-1], conv_len)(model)
 
         if causal: model = Cropping1D((0,conv_len//2))(model)
 
         if dropout_ratio != 0:
             model = SpatialDropout1D(dropout_ratio)(model)
+
+
 
         if activation=='norm_relu': 
             model = Activation('relu')(model)
@@ -1075,14 +1290,774 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
             model = PMAcfun()(model)
         elif activation == 'sqrt':
             model = SqrtAcfun()(model)
-
         else:
             model = Activation(activation)(model)
 
-        # if u_connection:
-        #    model = keras.layers.Concatenate(axis=-1)([model, branch[-i-1]])
         
+
+    # Output FC layer
+    model = TimeDistributed(Dense(n_classes, activation='softmax'))(model)
+    model = Model(input=inputs, output=model)
+
+    # optimizer = keras.optimizers.RMSprop(lr=lr_init)
+    optimizer = keras.optimizers.Adam(lr=lr_init, decay=1e-4)
+    # loss = constrained_loss(mat_factor_list, weights=1e3,loss_type='softbinary')
+
+    model.compile(loss='categorical_crossentropy', optimizer=optimizer, sample_weight_mode="temporal", metrics=['accuracy'])
+    # model.compile(loss=loss, optimizer=optimizer, sample_weight_mode="temporal", metrics=['accuracy'])
+
+    if return_param_str:
+        param_str = "ED-Bilinear_{}_NeighborSize_{}_lowdim_{}".format(pooling_type, temporal_neighbour_size, str(low_dim))
+        if causal:
+            param_str += "_causal"
+    
+        return model, param_str
+    else:
+        return model
+
+
+
+
+
+
+
+
+
+def convolution_module(model, n_nodes, conv_len, dropout_ratio=0.3,
+                       activation='norm_relu'):
+
+    ## the first convolution module
+    model= Conv1D(n_nodes, conv_len, padding='same')(model)
+    if dropout_ratio != 0:
+        model = SpatialDropout1D(dropout_ratio)(model)
+    
+    # activation function
+    if activation=='norm_relu': 
+        model = Activation('relu')(model)
+        model = Lambda(channel_normalization)(model)
+    elif activation=='wavenet': 
+        model = WaveNet_activation(model) 
+    elif activation=='charbonnier':
+        model = CharbonnierAcfun()(model)
+    elif activation=='swish':
+        model = SwishAcfun()(model)
+    elif activation=='leaky_relu':
+        model = keras.layers.LeakyReLU(alpha=0.2)(model)
+    elif activation == 'pm':
+        model = PMAcfun()(model)
+    elif activation == 'sqrt':
+        model = SqrtAcfun()(model)
+    else:
+        model = Activation(activation)(model) 
+
+    return model
+
+
+
+
+
+
+
+def zero_padding_feature_dim(x, n_dim_target):
+
+    n_dim = x.get_shape().as_list()[-1]
+    
+    if n_dim > n_dim_target:
+        y = x[:,:,:n_dim_target]
+    else:
+        pad = n_dim_target-n_dim
+        xt = K.permute_dimensions(x, (0,2,1))
+        xt = ZeroPadding1D((pad,0))(xt)
+        y = K.permute_dimensions(xt, (0,2,1))
+
+
+    return y
+
+
+
+
+class TimeSequenceWarping(Layer):
+    def __init__(self, offset):
+        self.offset = offset
+        super(TimeSequenceWarping, self).__init__()
+
+    def build(self, input_shape):
+        self.shape = input_shape
+        super(TimeSequenceWarping, self).build(input_shape)
+
+    def call(self, x, **kwargs):
+        x_lift = K.expand_dims(x, axis=1) # from [batch, time, channel] to [batch, 1, time, channel]
+        x_lift = K.repeat_elements(x_lift, 2, axis=1) # to [batch, 2, time, channel]
+        # x_lift_shape = tf.shape(x_lift)
+        # x_lift = K.reshape(x_lift, x_lift_shape)
+        # print(x_lift_shape)
+
+        # padding 0 to horizental direction
+        offset = K.permute_dimensions(self.offset, (0, 2, 1) ) #[batch, time, 1] to [batch, 1, time]
+        offset = ZeroPadding1D((1, 0))(offset) # [batch, 1, time] to [batch, 2, time]
+        offset = K.permute_dimensions(offset, (0, 2, 1) ) #[batch, 2, time] to [batch, time, 2]
+        offset_lift = K.expand_dims(offset, axis=1) # from [batch, time, 2] to [batch, 1, time, 2]
+        offset_lift = K.repeat_elements(offset_lift, 2, axis=1) # to [batch, 2, time, 2]    
+
+        # apply image warping
+        x_warp_list = tf.contrib.image.dense_image_warp(x_lift, offset_lift)
+        x_warp = x_warp_list[:,-1,:,:]
+
+        return x_warp
+
+    def compute_output_shape(self, input_shape):
+        
+        return tuple(input_shape)
+
+
+
+
+
+
+
+def convolution_residual_module(model, n_nodes, conv_len, 
+                                dropout_ratio=0.3,
+                                activation='norm_relu',
+                                shortcut_processing='padding'):
+    model0 = model
+
+    # if shortcut has different dimensions, perform 1x1 convolution
+    model0_dim = model0.get_shape().as_list()[-1]
+
+    
+    if model0_dim != n_nodes:
+        if shortcut_processing == '1x1conv':
+            model0 = convolution_module(model0, n_nodes, 1, dropout_ratio=0.3,
+                           activation='norm_relu')
+        elif shortcut_processing == 'padding':
+            model0 = Lambda(lambda x: zero_padding_feature_dim(x, n_nodes))(model0)
+            
+    model = convolution_module(model, n_nodes, conv_len, dropout_ratio=dropout_ratio,
+                               activation=activation)
+    model = keras.layers.Add()([model, model0])
+
+    return model
+
+
+
+
+
+# def time_sequence_warping_linear(x, offset):
+#     x_lift = K.expand_dims(x, axis=1) # from [batch, time, channel] to [batch, 1, time, channel]
+#     x_lift = K.repeat_elements(x_lift, 2, axis=1) # to [batch, 2, time, channel]
+
+#     # padding 0 to horizental direction
+#     offset = K.permute_dimensions(offset, (0, 2, 1) ) #[batch, time, 1] to [batch, 1, time]
+#     offset = ZeroPadding1D((1, 0))(offset) # [batch, 1, time] to [batch, 2, time]
+#     offset = K.permute_dimensions(offset, (0, 2, 1) ) #[batch, 2, time] to [batch, time, 2]
+#     offset_lift = K.expand_dims(offset, axis=1) # from [batch, time, 2] to [batch, 1, time, 2]
+#     offset_lift = K.repeat_elements(offset_lift, 2, axis=1) # to [batch, 2, time, 2]    
+
+#     # apply image warping
+#     x_warp_list = K.tf.contrib.image.dense_image_warp(x_lift, offset_lift)
+#     x_warp = x_warp_list[:,0,:,:]
+
+#     return x_warp
+
+
+def deformable_convolution_module(model, n_nodes, conv_len, dropout_ratio=0.3,
+                                  activation='norm_relu'):
+
+
+    ## get the offset map for each location. Note that all channels at the same position shares the same offset
+    offset = convolution_module(model, 1, conv_len, dropout_ratio=dropout_ratio,
+                       activation='linear')
+
+    ## constrain the offset between  [-value, value]
+    offset = K.clip(offset, -15, 15)
+    
+    ## according to the offset, we obtain an new image via linear interpolation
+    model_warp = TimeSequenceWarping(offset=offset)(model)
+    # model_warp = time_sequence_warping_linear(model, offset)
+
+
+    ## apply convolution to the warp image
+    outputs = convolution_module(model_warp, n_nodes, conv_len, dropout_ratio=dropout_ratio,
+                       activation='linear')
+    return outputs
+
+
+
+
+
+
+
+def pooling_module(model, 
+                    pooling_type='max',
+                    low_dim=False,
+                    temporal_neighbour_size=5,
+                    stride=2):
+
+    # pooling 
+    if pooling_type == 'max':
+        model = MaxPooling1D(stride)(model)  
+    elif pooling_type == 'avg':
+        model = AveragePooling1D(stride)(model)  
+    elif pooling_type == 'cbilinear':
+        model = BilinearPooling(temporal_neighbour_size,stride=stride, trainable=True, low_dim=low_dim)(model)
+    elif pooling_type == 'dbilinear':
+        model = CenteredBilinearPooling2(temporal_neighbour_size,stride=stride, 
+            trainable=True, feature='mean_cov',low_dim=low_dim)(model)
+    elif pooling_type == 'compact':
+        n_channels = model.shape[-1]
+        model = Lambda(lambda x: compact_bilinear_pooling_layer(x, x, output_dim = (n_channels+1)*n_channels//2, sum_pool=False, sequential=False ) )(model)
+        model = AveragePooling1D(stride)(model)  
+    elif pooling_type == 'cbilinear_linear_proj':
+        n_channels = model.get_shape().as_list()[-1]
+        model = BilinearPooling(temporal_neighbour_size,stride=stride, trainable=True, low_dim=False)(model)
+        n_dim_target = n_channels*(n_channels+1)//2
+        model = Conv1D(n_dim_target, 1, padding='same')(model)
+    elif pooling_type == 'dbilinear_linear_proj':
+        n_channels = model.get_shape().as_list()[-1]
+        model = CenteredBilinearPooling2(temporal_neighbour_size,stride=stride, 
+            trainable=True, feature='mean_cov',low_dim=False)(model)
+        n_dim_target = n_channels*(n_channels+3)//2
+        model = Conv1D(n_dim_target, 1, padding='same')(model)
+    else:
+        sys.exit('[ERROR]: the pooling type is not supported.')
+
+
+    return model
+
+
+
+
+
+
+
+def deformable_temporal_residual_module(model0, model, n_nodes, 
+                                        conv_len,
+                                        pooling_stride,
+                                        pooling_type = 'avg',
+                                        dropout_ratio=0.3, 
+                                        activation='norm_relu',
+                                        shortcut_processing='padding',
+                                        low_dim=False):
+
+    model_dim = model.get_shape().as_list()[-1]
+    model0_dim = model0.get_shape().as_list()[-1]
+    
+    # pooling on model0
+    model00 = pooling_module(model0, 
+                            pooling_type=pooling_type,
+                            stride=pooling_stride)
+
+
+    if model0_dim != model_dim:
+        if shortcut_processing == '1x1conv':
+            model00 = convolution_module(model00, model_dim, 1, dropout_ratio=dropout_ratio,
+                           activation='norm_relu')
+        elif shortcut_processing == 'padding':
+            model00 = Lambda(lambda x: zero_padding_feature_dim(x, model_dim))(model00)
+
+
+
+    # concatenate model0 and model
+    model = keras.layers.Concatenate(axis=-1)([model00, model])
+
+
+    # deformable convolution
+    model = deformable_convolution_module(model, n_nodes, conv_len, 
+                                        dropout_ratio=dropout_ratio,
+                                        activation=activation)
+
+
+    # recover to the original dimension and upsampling
+    models = convolution_module(model, model0_dim, 1, dropout_ratio=dropout_ratio,
+                               activation=activation)
+    models = UpSampling1D(pooling_stride)(models)
+
+
+    # add to the shortcut
+    model0 = keras.layers.Add()([model0, models])
+
+
+    return model0, model
+
+
+
+
+
+
+
+def ED_Residual_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len, 
+            activation='norm_relu',
+            return_param_str=False,
+            pooling_type = 'dbilinear',
+            temporal_neighbour_size=5,
+            batch_size = 4, lr_init = 0.01,
+            low_dim=False,
+            dropout_ratio=0.5):
+
+
+    use_deformable=False
+
+    if use_deformable:   
+
+        # input layer
+        n_layers = len(n_nodes)
+        inputs = Input(batch_shape=(batch_size, max_len,n_feat))
+        model = inputs
+        model = Lambda(lambda x: tf.cast(x, dtype=tf.float32))(model)
+
+
+        # convolution
+        model0 = convolution_module(model, n_nodes[0], conv_len, dropout_ratio=dropout_ratio,
+                                    activation='norm_relu')
+
+        model = pooling_module(model0, 
+                                pooling_type='max',
+                                low_dim=low_dim,
+                                temporal_neighbour_size=temporal_neighbour_size)
+
+
+        # DTRM X 3
+        model0, model = deformable_temporal_residual_module(model0, model, n_nodes[1], 
+                                            conv_len,
+                                            pooling_stride=2,
+                                            pooling_type = 'avg',
+                                            dropout_ratio=0.3, 
+                                            activation='norm_relu')
+        
+
+        model = pooling_module(model, 
+                                pooling_type='max',
+                                low_dim=low_dim,
+                                temporal_neighbour_size=temporal_neighbour_size)
+
+
+
+        
+        model0, model = deformable_temporal_residual_module(model0, model, n_nodes[1], 
+                                            conv_len,
+                                            pooling_stride=4,
+                                            pooling_type = 'avg',
+                                            dropout_ratio=0.3, 
+                                            activation='norm_relu')
+        
+        model = UpSampling1D(2)(model)
+
+        model0, model = deformable_temporal_residual_module(model0, model, n_nodes[0], 
+                                            conv_len,
+                                            pooling_stride=2,
+                                            pooling_type = 'avg',
+                                            dropout_ratio=0.3, 
+                                            activation='norm_relu')
+        model = UpSampling1D(2)(model)        
+
+        # convolution
+        model = keras.layers.Concatenate(axis=-1)([model0, model])
+        model = convolution_module(model, n_nodes[0], conv_len, dropout_ratio=dropout_ratio,
+                                    activation='norm_relu')
+
+
+
+        # Output FC layer
+        model = TimeDistributed(Dense(n_classes, activation='softmax'))(model)
+        model = Model(input=inputs, output=model)
+
+
+        # optimizer = keras.optimizers.RMSprop(lr=0.01)
+        optimizer = keras.optimizers.Adam(lr=lr_init, decay=0.0)
+        
+        model.compile(loss='categorical_crossentropy', optimizer=optimizer, sample_weight_mode="temporal",
+                        metrics=['accuracy'])
+
+        if return_param_str:
+            param_str = "ED_Deformable_Residual_Bilinear"
+            
+            return model, param_str
+        else:
+            return model
+
+
+    else:
+
+        # input layer
+        n_layers = len(n_nodes)
+        inputs = Input(shape=( max_len,n_feat))
+        model = inputs
+        model = Lambda(lambda x: tf.cast(x, dtype=tf.float32))(model)
+
+
+        # convolution
+        model = convolution_module(model, n_nodes[0], conv_len, dropout_ratio=dropout_ratio,
+                                    activation='norm_relu')
+
+        model = pooling_module(model, 
+                                pooling_type='max',
+                                low_dim=low_dim,
+                                temporal_neighbour_size=temporal_neighbour_size)
+
+
+        # residual + pooling
+        model = convolution_residual_module(model, n_nodes[0], conv_len, 
+                                            dropout_ratio=dropout_ratio,
+                                            activation='norm_relu')
+
+
+        model = pooling_module(model, 
+                            pooling_type=pooling_type,
+                            # pooling_type='max',
+                            low_dim=low_dim,
+                            temporal_neighbour_size=temporal_neighbour_size)
+
+        
+
+        # residual module in the bottleneck
+        model = convolution_residual_module(model, n_nodes[1], conv_len, 
+                                            dropout_ratio=dropout_ratio,
+                                            activation='norm_relu')
+
+
+
+        # upsampling and residual
+        model = UpSampling1D(2)(model)
+        model= convolution_residual_module(model, n_nodes[0], conv_len, 
+                                            dropout_ratio=dropout_ratio,
+                                            activation='norm_relu')
+        
+
+        # upsampling and convolution
+        model = UpSampling1D(2)(model)
+        model = convolution_module(model, n_nodes[0], conv_len, 
+                                    dropout_ratio=dropout_ratio,
+                                    activation='norm_relu')
+
+
+
+        # Output FC layer
+        model = TimeDistributed(Dense(n_classes, activation='softmax'))(model)
+        model = Model(input=inputs, output=model)
+
+
+        # optimizer = keras.optimizers.RMSprop(lr=0.01)
+        optimizer = keras.optimizers.Adam(lr=lr_init, decay=0.0)
+        
+        model.compile(loss='categorical_crossentropy', optimizer=optimizer, sample_weight_mode="temporal",
+                        metrics=['accuracy'])
+
+        if return_param_str:
+            param_str = "ED-Residual"
+            
+            return model, param_str
+        else:
+            return model
+
+
+
+
+
+
+
+
+
+
+
+def ED_Deformable_Residual_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len, 
+            activation='norm_relu',
+            return_param_str=False,
+            pooling_type = 'dbilinear',
+            temporal_neighbour_size=5,
+            batch_size = 4, lr_init = 0.01,
+            low_dim=False,
+            dropout_ratio=0.3):
+    '''
+       the net architecture follows the work of [Peng Lei and Sinisa Todorovic, CVPR, 2018]
+       temporal deformable residual networks for action segmentation
+    '''
+    
+
+    # input layer
+    n_layers = len(n_nodes)
+    inputs = Input(shape=( max_len,n_feat))
+    model = inputs
+    model = Lambda(lambda x: tf.cast(x, dtype=tf.float32))(model)
+
+
+    # convolution
+    model0 = convolution_module(model, n_nodes[0], conv_len, dropout_ratio=dropout_ratio,
+                                activation='norm_relu')
+
+    model = pooling_module(model0, 
+                            pooling_type='max',
+                            low_dim=low_dim,
+                            temporal_neighbour_size=temporal_neighbour_size)
+
+
+    # DTRM X 3
+    model0, model = deformable_temporal_residual_module(model0, model, n_nodes[1], 
+                                        conv_len,
+                                        pooling_stride=2,
+                                        pooling_type = 'max',
+                                        dropout_ratio=0.3, 
+                                        activation='norm_relu')
+    
+    
+    model0, model = deformable_temporal_residual_module(model0, model, n_nodes[1], 
+                                        conv_len,
+                                        pooling_stride=4,
+                                        pooling_type = 'max',
+                                        dropout_ratio=0.3, 
+                                        activation='norm_relu')
+    
+
+    model0, model = deformable_temporal_residual_module(model0, model, n_nodes[0], 
+                                        conv_len,
+                                        pooling_stride=2,
+                                        pooling_type = 'max',
+                                        dropout_ratio=0.3, 
+                                        activation='norm_relu')
+    
+
+    # convolution
+    model = keras.layers.Concatenate(axis=-1)([model0, model])
+    model = convolution_module(model, n_nodes[0], conv_len, dropout_ratio=dropout_ratio,
+                                activation='norm_relu')
+
+
+
+    # Output FC layer
+    model = TimeDistributed(Dense(n_classes, activation='softmax'))(model)
+    model = Model(input=inputs, output=model)
+
+
+    # optimizer = keras.optimizers.RMSprop(lr=0.01)
+    optimizer = keras.optimizers.Adam(lr=lr_init, decay=0.0)
+    
+    model.compile(loss='categorical_crossentropy', optimizer=optimizer, sample_weight_mode="temporal",
+                    metrics=['accuracy'])
+
+    if return_param_str:
+        param_str = "ED_Deformable_Residual_Bilinear"
+        
+        return model, param_str
+    else:
+        return model
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def ED_Residual_Bilinear_real(n_nodes, conv_len, n_classes, n_feat, max_len, 
+            activation='norm_relu',
+            return_param_str=False,
+            pooling_type = 'dbilinear',
+            temporal_neighbour_size=5,
+            batch_size = 4, lr_init = 0.01,
+            low_dim=False,
+            dropout_ratio=0.5):
+    '''
+       the net architecture follows the work of [Peng Lei and Sinisa Todorovic, CVPR, 2018]
+       temporal deformable residual networks for action segmentation
+    '''
+    
+
+    # input layer
+    n_layers = len(n_nodes)
+    inputs = Input(shape=( max_len,n_feat))
+    model = inputs
+    model = Lambda(lambda x: tf.cast(x, dtype=tf.float32))(model)
+
+
+    # convolution
+    model = convolution_module(model, n_nodes[0], conv_len, dropout_ratio=dropout_ratio,
+                                activation='norm_relu')
+
+    model = pooling_module(model, 
+                            pooling_type='max',
+                            low_dim=low_dim,
+                            temporal_neighbour_size=temporal_neighbour_size)
+
+
+    # residual + pooling
+    model = convolution_residual_module(model, n_nodes[0], conv_len, 
+                                        dropout_ratio=dropout_ratio,
+                                        activation='norm_relu')
+
+
+    model = pooling_module(model, 
+                        pooling_type=pooling_type,
+                        # pooling_type='max',
+                        low_dim=low_dim,
+                        temporal_neighbour_size=temporal_neighbour_size)
+
+    
+
+    # residual module in the bottleneck
+    model = convolution_residual_module(model, n_nodes[1], conv_len, 
+                                        dropout_ratio=dropout_ratio,
+                                        activation='norm_relu')
+
+
+
+    # upsampling and residual
+    model = UpSampling1D(2)(model)
+    model= convolution_residual_module(model, n_nodes[0], conv_len, 
+                                        dropout_ratio=dropout_ratio,
+                                        activation='norm_relu')
+    
+
+    # upsampling and convolution
+    model = UpSampling1D(2)(model)
+    model = convolution_module(model, n_nodes[0], conv_len, 
+                                dropout_ratio=dropout_ratio,
+                                activation='norm_relu')
+
+
+
+    # Output FC layer
+    model = TimeDistributed(Dense(n_classes, activation='softmax'))(model)
+    model = Model(input=inputs, output=model)
+
+
+    # optimizer = keras.optimizers.RMSprop(lr=0.01)
+    optimizer = keras.optimizers.Adam(lr=lr_init, decay=0.0)
+    
+    model.compile(loss='categorical_crossentropy', optimizer=optimizer, sample_weight_mode="temporal",
+                    metrics=['accuracy'])
+
+    if return_param_str:
+        param_str = "ED-Residual"
+        
+        return model, param_str
+    else:
+        return model
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def ED_InceptionK(n_nodes, conv_len, n_classes, n_feat, max_len, 
+            activation='norm_relu',
+            return_param_str=False,
+            batch_size = 4, 
+            lr_init = 0.01,
+            dropout_ratio=0.3):
+
+    n_layers = len(n_nodes)
+
+    inputs = Input(shape=( max_len,n_feat))
+    model = inputs
+    model = Lambda(lambda x: tf.cast(x, dtype=tf.float32))(model)
+    #u_connection = False
+    #branch = []
+
+    # ---- Encoder ----
+    for i in range(n_layers):
+
+
+        model= Conv1D(n_nodes[i], conv_len, padding='same')(model)
+
+
+        if dropout_ratio != 0:
+            model = SpatialDropout1D(dropout_ratio)(model)
+        
+        if activation=='norm_relu': 
+            model = Activation('relu')(model)
+            model = Lambda(channel_normalization, name="encoder_norm_{}".format(i))(model)
+        else:
+            model = Activation(activation)(model)    
+    
+        
+
+        model = InceptionK_module(model, order=[1,2,3], 
+                                  conv_size=[1,11,25],
+                                  activation='norm_relu',
+                                  dropout_ratio = 0.3)
+
+
+        # model= Conv1D(n_nodes[i], 1, padding='same')(model)
+
+        # if dropout_ratio != 0:
+        #     model = SpatialDropout1D(dropout_ratio)(model)
+
+        # if activation=='norm_relu': 
+        #     model = Activation('relu')(model)
+        #     model = Lambda(channel_normalization, name="encoder_norm_{}".format(i))(model)
+        # else:
+        #     model = Activation(activation)(model) 
+
+
+
+
+        model = keras.layers.MaxPooling1D(2)(model)  
+      
         print(model.shape)
+
+
+    # ---- Decoder ----
+    for i in range(n_layers):
+        model = UpSampling1D(2)(model)
+
+    
+
+        model = Conv1D(n_nodes[-i-1], conv_len, padding='same')(model)
+        if dropout_ratio != 0:
+            model = SpatialDropout1D(dropout_ratio)(model)
+
+        if activation=='norm_relu': 
+            model = Activation('relu')(model)
+            model = Lambda(channel_normalization, name="decoder_norm_{}".format(i))(model)
+        else:
+            model = Activation(activation)(model)
+
+        model = InceptionK_module(model, order=[1,2,3], 
+                                  conv_size=[1,11,25], 
+                                  activation='norm_relu',
+                                  dropout_ratio=0.3)
+
+
+        print(model.shape)
+
+        # model = Conv1D(n_nodes[-i-1], 1, padding='same')(model)
+
+        # if dropout_ratio != 0:
+        #     model = SpatialDropout1D(dropout_ratio)(model)
+
+        # if activation=='norm_relu': 
+        #     model = Activation('relu')(model)
+        #     model = Lambda(channel_normalization, name="decoder_norm_{}".format(i))(model)
+        # else:
+        #     model = Activation(activation)(model)
 
     # Output FC layer
     model = TimeDistributed(Dense(n_classes, activation='softmax'))(model)
@@ -1095,13 +2070,14 @@ def ED_Bilinear(n_nodes, conv_len, n_classes, n_feat, max_len,
     model.compile(loss='categorical_crossentropy', optimizer=optimizer, sample_weight_mode="temporal", metrics=['accuracy'])
 
     if return_param_str:
-        param_str = "ED-Bilinear_{}_NeighborSize_{}_lowdim_{}".format(pooling_type, temporal_neighbour_size, str(low_dim))
-        if causal:
-            param_str += "_causal"
+        param_str = "ED-XceptionK"
     
         return model, param_str
     else:
         return model
+
+
+
 
 
 
