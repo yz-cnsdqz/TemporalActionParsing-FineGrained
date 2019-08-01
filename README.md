@@ -1,6 +1,8 @@
-# Local Temporal Action Parsing for Fine-grained Action Parsing
+# Local Temporal Bilinear Pooling for Fine-grained Action Parsing
 
 We propose a temporal local bilinear pooling method to replace max pooling in a temporal convolutional encoder-decoder network (see below), so as to capture higher-order statistics for our fine-grained tasks. Our bilinear pooling is learnable, decoupled and has a analytical solution to halve the dimensionality. For more details, please refer to our paper
+
+
 
     @InProceedings{Zhang_2019_CVPR,
     author = {Zhang, Yan and Tang, Siyu and Muandet, Krikamol and Jarvers, Christian and Neumann, Heiko},
@@ -11,6 +13,19 @@ We propose a temporal local bilinear pooling method to replace max pooling in a 
     }
 
 and a [video demo](https://ps.is.tuebingen.mpg.de/uploads_file/attachment/attachment/470/demo-bilinear.m4v), which is better to be opened by vlc. We are still looking forward to optimizing the code.
+
+
+
+## __news!!__
+We have added new implementations for low-rank random feature projection. Such new bilinear pooling layer produces superior performance and runs faster. In particular, we have proposed the first RKHS theories for fusing two different input feature vectors via bilinear pooling. Details are in:
+
+
+    @article{zhang2019low,
+      title={Low-rank Random Tensor for Bilinear Pooling},
+      author={Zhang, Yan and Muandet, Krikamol and Ma, Qianli and Neumann, Heiko and Tang, Siyu},
+      journal={arXiv preprint arXiv:1906.01004},
+      year={2019}
+    }
 
 
 
